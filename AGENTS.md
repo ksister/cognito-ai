@@ -14,6 +14,9 @@
 | `04-resources/` | 参考资料、方法论、行业知识、可复用的提示词 |
 | `05-archive/` | 已完成或暂停的内容 |
 | `journal/` | 每日工作日志 `YYYY-MM-DD.md`，只追加不修改 |
+| `customers/<客户>/` | 客户档案 `profile.md`、技术支持记录 `records/*.md`、资料 `files/` |
+| `requirements/` | 需求分析文档 |
+| `workbench/` | 本地网页工作台（Next.js），读写 `customers/` 和 `requirements/` |
 | `templates/` | 各类笔记模板 |
 | `prompts/` | 常用 AI 工作流提示词 |
 
@@ -29,9 +32,18 @@
 5. **输出风格**：参考 `01-me/style.md`。默认：结论先行、简洁、给可执行的下一步。
 6. 不要删除任何文件；需要清理时移动到 `05-archive/`。
 
+## 技术支持记录格式
+`customers/<客户>/records/YYYY-MM-DD-<标题>.md`：
+- frontmatter：`title date customer channel contact product module category status feishu_synced needs created updated`
+  - `status` ∈ 待处理 / 跟进中 / 已解决 / 已关闭
+  - `needs` 是 `{pain, idea, type}` 列表，type ∈ 软件改进 / 辅助工具 / 文档/教程 / 其他
+- 正文小节固定为：`## 问题描述` `## 处理过程` `## 解决方案` `## 我的思考` `## 待确认` `## 原始聊天记录`（最后一节用四个反引号包裹原文）
+- 「我的思考」和「原始聊天记录」由我本人维护，AI 不得改写。
+
 ## 常用工作流
 见 `prompts/`：
 - `ingest.md` — 把 inbox 里的原始材料整理归档
 - `daily.md` — 根据今日日志生成总结和明日计划
 - `weekly-review.md` — 每周回顾
 - `ask-my-brain.md` — 基于我的资料回答问题
+- `requirement-analysis.md` — 从全部支持记录中提炼需求
