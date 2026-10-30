@@ -114,14 +114,6 @@ export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string 
   }
 }
 
-function mimeOf(buf: Buffer): string {
-  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg"
-  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png"
-  if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif"
-  if (buf[0] === 0x52 && buf[1] === 0x49) return "image/webp"
-  return "image/jpeg"
-}
-
 function mapHttpError(status: number, body: string): VlExtractError {
   if (status === 401 || status === 403) {
     return new VlExtractError("auth", "通义 VL 鉴权失败，请检查 DASHSCOPE_API_KEY")
