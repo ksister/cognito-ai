@@ -1,6 +1,6 @@
-import path from "node:path"
-import { createRecord, listRecords, saveScreenshotBatch, updateRecord, KB_ROOT, safeName } from "@/lib/kb"
-import { pushRecordToFeishu, type LarkPushResult } from "@/lib/lark-bitable"
+import { createRecord, listRecords, saveScreenshotBatch, updateRecord } from "@/lib/kb"
+import { pushSavedRecord } from "@/lib/feishu-record-push"
+import type { LarkPushResult } from "@/lib/lark-bitable"
 import { compressImageBuffer } from "@/lib/vl"
 import type { RecordDraft } from "@/lib/types"
 
@@ -74,35 +74,16 @@ export async function POST(req: Request) {
     const wantPush = side.push !== false
     let feishu: LarkPushResult | undefined
     if (wantPush) {
-      const customerSafe = safeName(rec.customer)
-      const filesDir = path.join(KB_ROOT, "customers", customerSafe, "files")
-      const screenshotFiles = screenshots.map((name) => ({
-        name,
-        path: path.join(filesDir, name),
-      }))
       // Use the saved record: createRecord assigns local_id after the incoming draft.
-      feishu = await pushRecordToFeishu({
-        draft: { ...rec },
-        companyOption: side.companyOption,
-        handlerOpenIds: side.handlerOpenIds,
-        screenshotFiles,
-        // API mode may still use buffers if paths missing
-        screenshots: screenshots.map((name, i) => ({
-          name,
-          data: screenshotBufs[i],
-        })),
-      })
-      if (feishu.ok) {
-        try {
-          await updateRecord(rec.customer, rec.file.replace(/\.md$/, ""), { feishuSynced: true })
-          rec.feishuSynced = true
-        } catch {
-          // local mark-synced is best-effort
-        }
-      }
+      const pushed = await pushSavedRecord(
+        { ...rec, screenshots: rec.screenshots },
+        { companyOption: side.companyOption, handlerOpenIds: side.handlerOpenIds },
+      )
+      Object.assign(rec, pushed.record)
+      feishu = pushed.feishu
     }
 
-    return Response.json({ ...rec, screenshots, feishu })
+    return Response.json({ ...rec, screenshots: rec.screenshots, feishu })
   } catch (e) {
     return Response.json({ error: (e as Error).message }, { status: 400 })
   }

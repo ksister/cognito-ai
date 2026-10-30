@@ -46,6 +46,7 @@ import {
   type RecordDraft,
   type SupportRecord,
 } from "@/lib/types"
+import { feishuFailureMessage, feishuOutcomeMessage } from "@/lib/lark-push-plan"
 import { OCR_TRANSCRIPT_MARKER, resolveExtractedChat } from "@/lib/transcript"
 
 const MAX_SHOTS = 9
@@ -123,7 +124,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const [lastSource, setLastSource] = useState<"screenshot" | "paste" | undefined>()
   const [vlError, setVlError] = useState<string>()
   const [handlerOpenIds, setHandlerOpenIds] = useState<string[]>([])
-  const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "upload" | "attach" | "done">("idle")
+  const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "update" | "upload" | "attach" | "done">("idle")
   const [copyFallback, setCopyFallback] = useState<string | null>(null)
   const [feishuMeta, setFeishuMeta] = useState<{
     configured: boolean
@@ -356,7 +357,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     }
   }
 
-  async function save() {
+  async function save(syncFeishu = false) {
     if (!editing) {
       if ((shots.length > 0 || extracted) && !confirmed) {
         toast.error("请先在黄色区域核对并点「确认无误」")
@@ -389,13 +390,17 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       }
       const feishuSide = {
         handlerOpenIds,
-        push: !editing,
+        push: !editing || syncFeishu,
       }
       let res: Response
       if (initial) {
         res = await fetch(
           `/api/records/${encodeURIComponent(initial.customer)}/${encodeURIComponent(initial.file.replace(/\.md$/, ""))}`,
-          { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(bodyDraft) },
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...bodyDraft, syncFeishu, feishu: feishuSide }),
+          },
         )
       } else if (shots.length > 0) {
         const form = new FormData()
@@ -421,6 +426,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       if (fr) {
         for (const st of fr.steps) {
           if (st.step === "create") setSavePhase("create")
+          if (st.step === "update") setSavePhase("update")
           if (st.step === "upload") setSavePhase("upload")
           if (st.step === "attach") setSavePhase("attach")
         }
@@ -429,10 +435,14 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
           for (const w of fr.warnings) toast.message(w)
         }
         if (fr.ok) {
-          toast.success(fr.recordId ? `已保存，飞书行 ${fr.recordId}` : "已保存并写入飞书")
+          toast.success(feishuOutcomeMessage(fr.action, fr.recordId))
         } else {
-          const stepFail = fr.steps.filter((x) => !x.ok).map((x) => x.step).join(",")
-          toast.error(`本地已保存；飞书未完成（${stepFail || "未知"}）：${fr.error || "失败"}。可用「复制为飞书行」降级`)
+          toast.error(feishuFailureMessage(fr))
+          if (fr.action === "updated" || fr.recordId) {
+            router.push(recordHref(data))
+            router.refresh()
+            return
+          }
           if (!schemaState.ok) {
             toast.error(`没有复制到剪贴板：表结构配置不可用。${schemaState.error}`)
           } else {
@@ -791,19 +801,24 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 </Field>
               ))}
             </div>
-            {!editing && (
-              <div className="space-y-3 rounded-lg border border-dashed border-sky-300 bg-sky-50/50 p-3">
-                <p className="text-sm font-medium text-sky-950">飞书直写（确认保存后）</p>
+            <div className="space-y-3 rounded-lg border border-dashed border-sky-300 bg-sky-50/50 p-3">
+                <p className="text-sm font-medium text-sky-950">
+                  {editing ? "同步飞书" : "飞书直写（确认保存后）"}
+                </p>
                 <p className="text-xs text-sky-900/80">
-                  {!schema
+                  {editing
+                    ? initial?.feishuRecordId
+                      ? `这条记录对应飞书行 ${initial.feishuRecordId}。点「同步飞书」会更新这一行，不会新建。只追加还没上传过的截图，已有附件留在飞书里。`
+                      : "这条记录还没有飞书行号。点「同步飞书」会新建一行，并把行号写回本地。之后再同步就更新这一行。"
+                    : !schema
                     ? "表结构配置未就绪，不会按旧列模板写入飞书。"
                     : feishuMeta == null
                       ? "正在检查 lark-cli…"
                       : feishuMeta.configured
-                        ? `默认走 lark-cli（${feishuMeta.mode || "cli"}）。建行只写配置里带 fieldId 的列。复制为飞书行是失败时的兜底。`
+                        ? `默认走 lark-cli（${feishuMeta.mode || "cli"}）。建行只写配置里带 fieldId 的列，成功后把行号写回本地。复制为飞书行是失败时的兜底。`
                         : `lark-cli 未就绪：${feishuMeta.error || "请登录 lark-cli"}。本地仍可保存；配置齐全后可用「复制为飞书行」。`}
                 </p>
-                {schema && <SyncOptionsButton />}
+                {schema && !editing && <SyncOptionsButton />}
                 {personColumns.length > 0 && handlers.length > 0 && (
                   <Field label={`${personColumns.map((c) => c.name).join("、")}（open_id 多选）`}>
                     <div className="flex flex-wrap gap-2">
@@ -830,11 +845,10 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 )}
                 {personColumns.length > 0 && handlers.length === 0 && (
                   <p className="text-xs text-muted-foreground">
-                    未配置 LARK_HANDLERS 时不写人员列。格式见 .env.example。复制行时该列留空。
+                    未配置 LARK_HANDLERS 时，处理人用私有配置里的 people.defaultOpenId。复制行时该列留空。
                   </p>
                 )}
               </div>
-            )}
           </CardContent>
         </Card>
 
@@ -917,26 +931,40 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
             保存为 Markdown：customers/{d.customer || "<客户>"}/records/
             {shots.length > 0 ? ` + files/${d.date || "聊天日期"}-标题-1..${shots.length}.jpg` : ""}
             {saveBlockedReason ? ` · ${saveBlockedReason}` : ""}
-            {saving && !editing
+            {saving
               ? ` · 进度：${
                   savePhase === "local"
                     ? "本地"
                     : savePhase === "create"
                       ? "本地→建行"
-                      : savePhase === "upload"
-                        ? "本地→建行→上传"
-                        : savePhase === "attach"
-                          ? "本地→建行→附件"
-                          : savePhase === "done"
-                            ? "完成"
-                            : "…"
+                      : savePhase === "update"
+                        ? "本地→更新同一行"
+                        : savePhase === "upload"
+                          ? "本地→上传新截图"
+                          : savePhase === "attach"
+                            ? "本地→附件"
+                            : savePhase === "done"
+                              ? "完成"
+                              : "…"
                 }`
               : ""}
           </span>
-          <Button onClick={save} disabled={saving || !canSave}>
-            {saving ? <Loader2 className="animate-spin" /> : <Save />}
-            {editing ? "保存修改" : "确认保存并写飞书"}
-          </Button>
+          {editing ? (
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => void save(false)} disabled={saving || !canSave}>
+                保存修改
+              </Button>
+              <Button onClick={() => void save(true)} disabled={saving || !canSave}>
+                {saving ? <Loader2 className="animate-spin" /> : <Save />}
+                同步飞书
+              </Button>
+            </div>
+          ) : (
+            <Button onClick={() => void save(false)} disabled={saving || !canSave}>
+              {saving ? <Loader2 className="animate-spin" /> : <Save />}
+              确认保存并写飞书
+            </Button>
+          )}
         </div>
       </div>
     </div>
