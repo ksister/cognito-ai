@@ -80,9 +80,9 @@ export async function POST(req: Request) {
         name,
         path: path.join(filesDir, name),
       }))
-      // 2–3) create (no attach) → upload-attachment via lark-cli (default) or API fallback
+      // Use the saved record: createRecord assigns local_id after the incoming draft.
       feishu = await pushRecordToFeishu({
-        draft: { ...draft, customer: rec.customer, title: rec.title },
+        draft: { ...rec },
         companyOption: side.companyOption,
         handlerOpenIds: side.handlerOpenIds,
         screenshotFiles,
