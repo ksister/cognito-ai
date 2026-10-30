@@ -1,4 +1,4 @@
-import "server-only"
+﻿import "server-only"
 import {
   CATEGORIES,
   CHANNELS,
@@ -12,7 +12,7 @@ const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY
 const DASHSCOPE_BASE_URL = (
   process.env.DASHSCOPE_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1"
 ).replace(/\/$/, "")
-const DASHSCOPE_VL_MODEL = process.env.DASHSCOPE_VL_MODEL ?? "qwen-vl-plus"
+const DASHSCOPE_VL_MODEL = process.env.DASHSCOPE_VL_MODEL ?? "qwen3-vl-plus"
 
 export const MAX_SCREENSHOTS = 9
 
