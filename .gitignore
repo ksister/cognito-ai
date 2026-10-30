@@ -14,3 +14,8 @@
 
 /00-inbox/*
 !/00-inbox/.gitkeep
+
+# 私有飞书表结构。KB_DIR 指向仓库根时就是这个路径。
+# 虚构示例仍跟踪：workbench/config/feishu-table.example.json
+/config/feishu-table.json
+/workbench/config/feishu-table.json

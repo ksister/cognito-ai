@@ -1,14 +1,22 @@
 import "server-only"
 import fs from "node:fs/promises"
+import fsSync from "node:fs"
 import path from "node:path"
 import matter from "gray-matter"
 import { allocateScreenshotNames } from "./screenshot-name"
 import {
-  CHANNELS,
+  closedStatusesOf,
+  extrasFromFrontmatter,
+  isOpenStatus,
+  legacyStatusMapOf,
+  mapLegacyStatus,
+  parseFeishuTableSchema,
+  sanitizeExtras,
+  type FeishuTableSchema,
+} from "./feishu-schema"
+import {
   NEED_TYPES,
-  OPEN_STATUSES,
   localDate,
-  type Channel,
   type CustomerProfile,
   type CustomerSummary,
   type Need,
@@ -57,6 +65,48 @@ async function exists(p: string) {
   } catch {
     return false
   }
+}
+
+function strList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((item) => str(item).trim()).filter(Boolean)
+  if (typeof v === "string" && v.trim()) return v.split(/[,，、;；]/).map((item) => item.trim()).filter(Boolean)
+  return []
+}
+
+let schemaCache: { mtimeMs: number; schema: FeishuTableSchema | null } | null = null
+
+function readPrivateSchema(): FeishuTableSchema | null {
+  const filePath = path.join(KB_ROOT, "config", "feishu-table.json")
+  try {
+    const stat = fsSync.statSync(filePath)
+    if (schemaCache && schemaCache.mtimeMs === stat.mtimeMs) return schemaCache.schema
+    const schema = parseFeishuTableSchema(JSON.parse(fsSync.readFileSync(filePath, "utf8")), filePath)
+    schemaCache = { mtimeMs: stat.mtimeMs, schema }
+    return schema
+  } catch {
+    schemaCache = { mtimeMs: -1, schema: null }
+    return null
+  }
+}
+
+export async function listSiteSuggestions(): Promise<string[]> {
+  const records = await listRecords()
+  return [...new Set(records.map((r) => r.site.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"))
+}
+
+export function recordIsOpen(status: string): boolean {
+  return isOpenStatus(status, closedStatusesOf(readPrivateSchema()))
+}
+
+export function nextLocalId(date: string, used: Iterable<string>): string {
+  const ymd = (/^\d{4}-\d{2}-\d{2}$/.test(date) ? date : localDate()).replace(/-/g, "")
+  const re = new RegExp(`^AE-${ymd}-(\\d+)$`)
+  let max = 0
+  for (const id of used) {
+    const m = id.match(re)
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  return `AE-${ymd}-${String(max + 1).padStart(2, "0")}`
 }
 
 function str(v: unknown): string {
@@ -114,6 +164,20 @@ function parseNeeds(v: unknown): Need[] {
     .filter((n) => n.pain || n.idea)
 }
 
+function extraFrontmatter(r: SupportRecord): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const key of ["site", "support_type", "resolution", "fixed_version", "case_visibility", "docs", "local_id"] as const) {
+    if (r[key]?.trim()) out[key] = r[key].trim()
+  }
+  for (const key of ["dimensions", "inspection_types", "industries"] as const) {
+    if (r[key]?.length) out[key] = r[key]
+  }
+  for (const [k, v] of Object.entries(r.extras ?? {})) {
+    if (v.trim()) out[k] = v
+  }
+  return out
+}
+
 export function recordToMarkdown(r: SupportRecord): string {
   const fm = {
     title: r.title,
@@ -125,6 +189,7 @@ export function recordToMarkdown(r: SupportRecord): string {
     module: r.module,
     category: r.category,
     status: r.status,
+    ...extraFrontmatter(r),
     feishu_synced: r.feishuSynced,
     needs: r.needs,
     created: r.created,
@@ -169,12 +234,22 @@ export function markdownToRecord(customer: string, file: string, raw: string): S
     customer,
     title: str(data.title) || file.replace(/\.md$/, ""),
     date: str(data.date) || file.slice(0, 10),
-    channel: oneOf<Channel>(data.channel, CHANNELS, "其他"),
+    channel: str(data.channel),
     contact: str(data.contact),
     product: str(data.product),
     module: str(data.module),
-    category: str(data.category) || "其他",
-    status: str(data.status) || "待处理",
+    category: str(data.category),
+    status: mapLegacyStatus(str(data.status), legacyStatusMapOf(readPrivateSchema())),
+    site: str(data.site),
+    support_type: str(data.support_type),
+    resolution: str(data.resolution),
+    fixed_version: str(data.fixed_version),
+    dimensions: strList(data.dimensions),
+    inspection_types: strList(data.inspection_types),
+    industries: strList(data.industries),
+    case_visibility: str(data.case_visibility),
+    docs: str(data.docs),
+    local_id: str(data.local_id),
     feishuSynced: Boolean(data.feishu_synced),
     needs: parseNeeds(data.needs),
     created: str(data.created),
@@ -186,6 +261,7 @@ export function markdownToRecord(customer: string, file: string, raw: string): S
     uncertain: parseList(s[SECTION.uncertain] ?? ""),
     chat: s[SECTION.chat] ?? "",
     screenshots: parseScreenshots(data.screenshots),
+    extras: extrasFromFrontmatter(data as Record<string, unknown>),
   }
 }
 
@@ -201,8 +277,20 @@ function cleanDraft(d: RecordDraft): RecordDraft {
     title: d.title.trim(),
     customer: safeName(d.customer),
     date: /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : localDate(),
-    channel: oneOf<Channel>(d.channel, CHANNELS, "其他"),
-    status: (d.status ?? "").trim() || "待处理",
+    channel: (d.channel ?? "").trim(),
+    status: mapLegacyStatus((d.status ?? "").trim(), legacyStatusMapOf(readPrivateSchema())),
+    category: (d.category ?? "").trim(),
+    site: (d.site ?? "").trim(),
+    support_type: (d.support_type ?? "").trim(),
+    resolution: (d.resolution ?? "").trim(),
+    fixed_version: (d.fixed_version ?? "").trim(),
+    dimensions: strList(d.dimensions),
+    inspection_types: strList(d.inspection_types),
+    industries: strList(d.industries),
+    case_visibility: (d.case_visibility ?? "").trim(),
+    docs: (d.docs ?? "").trim(),
+    local_id: (d.local_id ?? "").trim(),
+    extras: sanitizeExtras(d.extras),
     needs: parseNeeds(d.needs),
     uncertain: (d.uncertain ?? []).map((u) => u.trim()).filter(Boolean),
     chat: (d.chat ?? "").replace(/`{4,}/g, "```"),
@@ -242,6 +330,10 @@ export async function getRecord(customer: string, file: string): Promise<Support
 
 export async function createRecord(draft: RecordDraft): Promise<SupportRecord> {
   const d = cleanDraft(draft)
+  if (!d.local_id) {
+    const used = (await listRecords()).map((r) => r.local_id).filter(Boolean)
+    d.local_id = nextLocalId(d.date, used)
+  }
   const dir = path.join(customerDir(d.customer), "records")
   await fs.mkdir(dir, { recursive: true })
   await ensureProfile(d.customer)
@@ -268,7 +360,12 @@ export async function updateRecord(
 ): Promise<SupportRecord> {
   const existing = await getRecord(customer, file)
   if (!existing) throw new Error("记录不存在")
-  const merged = { ...existing, ...patch, customer: existing.customer }
+  const merged = {
+    ...existing,
+    ...patch,
+    customer: existing.customer,
+    local_id: existing.local_id || patch.local_id || "",
+  }
   const d = cleanDraft(merged)
   const rec: SupportRecord = {
     ...existing,
@@ -279,6 +376,27 @@ export async function updateRecord(
   const p = within(customerDir(existing.customer), "records", existing.file)
   await fs.writeFile(p, recordToMarkdown(rec), "utf8")
   return rec
+}
+
+/** Assign local_id on first copy. Already-synced rows are reported so the UI can warn. */
+export async function ensureLocalIds(ids: string[]): Promise<{ records: SupportRecord[]; already: string[] }> {
+  const all = await listRecords()
+  const used = new Set(all.map((r) => r.local_id).filter(Boolean))
+  const records: SupportRecord[] = []
+  const already: string[] = []
+  for (const id of ids) {
+    const rec = all.find((r) => r.id === id)
+    if (!rec) continue
+    if (rec.feishuSynced && rec.local_id) already.push(rec.local_id)
+    if (rec.local_id) {
+      records.push(rec)
+      continue
+    }
+    const local_id = nextLocalId(rec.date, used)
+    used.add(local_id)
+    records.push(await updateRecord(rec.customer, rec.file.replace(/\.md$/, ""), { local_id }))
+  }
+  return { records, already }
 }
 
 const PROFILE_FIELDS: { key: keyof Omit<CustomerProfile, "name" | "notes">; label: string }[] = [
@@ -341,7 +459,7 @@ export async function listCustomers(): Promise<CustomerSummary[]> {
     out.push({
       ...(await getProfile(name)),
       recordCount: rs.length,
-      openCount: rs.filter((r) => OPEN_STATUSES.includes(r.status)).length,
+      openCount: rs.filter((r) => recordIsOpen(r.status)).length,
       firstDate: dates[0] ?? null,
       lastDate: dates[dates.length - 1] ?? null,
       needCount: rs.reduce((n, r) => n + r.needs.length, 0),

@@ -4,8 +4,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { EmptyState, PageHeader, StatusBadge, customerHref, recordHref } from "@/components/bits"
 import { SyncPanel } from "@/components/record-actions"
 import { aiConfigured } from "@/lib/ai"
-import { listCustomerNames, listRecords } from "@/lib/kb"
-import { OPEN_STATUSES, localDate } from "@/lib/types"
+import { loadFeishuSchemaState } from "@/lib/feishu-schema-load"
+import { listCustomerNames, listRecords, recordIsOpen } from "@/lib/kb"
+import { localDate } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
 
@@ -16,10 +17,14 @@ function daysAgo(n: number) {
 }
 
 export default async function Dashboard() {
-  const [records, customers] = await Promise.all([listRecords(), listCustomerNames()])
+  const [records, customers, schemaState] = await Promise.all([
+    listRecords(),
+    listCustomerNames(),
+    loadFeishuSchemaState(),
+  ])
   const weekAgo = daysAgo(6)
   const thisWeek = records.filter((r) => r.date >= weekAgo)
-  const open = records.filter((r) => OPEN_STATUSES.includes(r.status))
+  const open = records.filter((r) => recordIsOpen(r.status))
   const unsynced = records.filter((r) => !r.feishuSynced)
   const needCount = records.reduce((n, r) => n + r.needs.length, 0)
 
@@ -109,14 +114,14 @@ export default async function Dashboard() {
               <CardDescription>不用再一条条手填</CardDescription>
             </CardHeader>
             <CardContent>
-              <SyncPanel records={unsynced} />
+              <SyncPanel records={unsynced} schemaState={schemaState} />
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
               <CardTitle>未结问题</CardTitle>
-              <CardDescription>待处理 + 跟进中</CardDescription>
+              <CardDescription>处理状态不属于已解决、搁置、无法解决</CardDescription>
             </CardHeader>
             <CardContent>
               {open.length === 0 ? (

@@ -29,9 +29,25 @@ npm run dev                   # 打开 http://localhost:4317
 - ⚠️ 聊天记录会发送给你配置的模型服务商。涉及客户机密时，先确认公司规定，或使用公司内部部署的模型（同样填 `AI_BASE_URL` 即可）。
 
 ### 飞书表格列对齐
-「复制为飞书行」按以下列顺序输出（Tab 分隔，粘贴到表格即可自动分列）：
-日期、客户、联系人、渠道、产品/版本、模块、问题分类、问题描述、解决方案、状态、需求线索。
-如果你的飞书表格列不同，修改 `workbench/src/lib/feishu.ts` 里的 `FEISHU_COLUMNS`。
+「复制为飞书行」按 `KB_DIR/config/feishu-table.json` 的列顺序输出。仓库只带虚构示例 `workbench/config/feishu-table.example.json`，没有这份私有配置时会提示路径，不会退回旧的 11 列模板。
+
+1. 没设 `KB_DIR` 时，工作台用仓库根目录，配置文件就是 `config/feishu-table.json`。这个路径已在根目录 `.gitignore` 里，不会被提交。设了 `KB_DIR` 就放到那个目录的 `config/feishu-table.json`。
+2. 记一笔页的「从飞书同步选项」用 `lark-cli` 读当前表的选项，先列出增删，确认后才写入私有配置，并且只改 `options`。
+3. 复制示例后再改。列顺序必须与测试表「工作台粘贴」视图从左到右一致。`type`：`text` 文本、`date` 日期、`select` 单选、`multi` 多选、`person` 人员、`attachment` 附件。
+4. 示例里的客户公司是虚构的。处理状态、支持类型、解决方式等用的是字段说明里的选项名，不含客户名或同事名。真实客户选项只放在私有 `feishu-table.json`。
+5. 多选粘贴分隔符是文件顶部的 `multiSeparator`，默认英文逗号 `,`。测试表如果认顿号或其他符号，只改这一处。
+6. 处理人、附件不在这 20 列里，仍在飞书里手填。人员列如果以后加进配置，复制时先留空（粘贴姓名能否识别还没在真表上试过）。
+7. `fieldId` 只给以后的 cli/api 建行用，复制粘贴不需要。默认写入通道是 `lark-cli`（`LARK_PUSH_MODE=cli`）。复制为飞书行只在直写失败时兜底。
+
+### 粘贴验收（合并前，在测试表上做）
+1. 检出本 PR 分支，`cd workbench && npm install && npm run dev`。
+2. 把 `workbench/config/feishu-table.example.json` 复制到 `KB_DIR/config/feishu-table.json`（没设 `KB_DIR` 就是仓库根的 `config/feishu-table.json`，已被 gitignore）。再用「从飞书同步选项」换成测试表的真实选项，确认差异后再写入。
+3. 记一笔，保存一条测试记录，点「复制为飞书行」。
+4. 打开测试表的「工作台粘贴」视图，选中一行的第一个单元格粘贴。核对 20 列是否对齐，多选分隔符是否被飞书拆开，人员列仍需手填。
+
+把多选分隔符和人员列的粘贴结果写进 PR，等技术总监写明「通过，可合并」后再合并。不要 squash。
+
+新增且可选的 frontmatter 键：`site`、`support_type`、`resolution`、`fixed_version`、`dimensions`、`inspection_types`、`industries`、`case_visibility`、`docs`，以及自动生成的 `local_id`（`AE-YYYYMMDD-NN`）。旧记录没有这些键也能打开。`channel`、`module` 仍留在本地，不导出；`category` 不再出现在表单里，旧值保留。
 
 ## 真实数据放在哪
 
