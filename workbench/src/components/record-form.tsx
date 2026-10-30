@@ -78,6 +78,7 @@ const ERR_HINT: Record<ExtractErrorCode, string> = {
   unsafe: "内容被拦截",
   parse_error: "解析失败",
   partial: "部分成功",
+  truncated: "输出被截断",
 }
 
 export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustomer }: Props) {
@@ -112,6 +113,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     mode?: "cli" | "api"
   } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const transcriptBaseline = useRef<string | null>(null)
   const dragRef = useRef(false)
   const shotsRef = useRef(shots)
   shotsRef.current = shots
@@ -271,6 +273,14 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       toast.error("请先上传截图，或展开粘贴文字")
       return
     }
+    if (
+      transcriptBaseline.current != null &&
+      d.chat !== transcriptBaseline.current &&
+      d.chat.includes(OCR_TRANSCRIPT_MARKER)
+    ) {
+      const ok = window.confirm("转写已修改。继续整理会覆盖当前转写，要继续吗？")
+      if (!ok) return
+    }
     setExtracting(true)
     setWarning(undefined)
     setVlError(undefined)
@@ -305,6 +315,8 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         throw new Error("提取结果为空")
       }
       const source = data.source ?? (useShots ? "screenshot" : "paste")
+      const nextChat = resolveExtractedChat(source, d.chat, data.draft.chat)
+      transcriptBaseline.current = source === "screenshot" ? nextChat : null
       setD((p) => ({
         ...p,
         ...Object.fromEntries(Object.entries(data.draft).filter(([, v]) => v !== undefined && v !== "")),

@@ -15,6 +15,21 @@ const DASHSCOPE_BASE_URL = (
 ).replace(/\/$/, "")
 const DASHSCOPE_VL_MODEL = process.env.DASHSCOPE_VL_MODEL ?? "qwen3-vl-plus"
 
+/**
+ * qwen3-vl-plus 最大输出长度（非思考 / 思考模式均为 32768）。
+ * https://help.aliyun.com/zh/model-studio/qwen3-vl-plus 「上下文限制」
+ */
+export const QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS = 32768
+
+export const TRUNCATED_VL_MESSAGE = "截图太多或聊天太长，输出被截断，请分两批上传"
+
+export function resolveVlMaxTokens(raw = process.env.DASHSCOPE_VL_MAX_TOKENS): number {
+  if (raw == null || raw.trim() === "") return QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS
+  return Math.floor(n)
+}
+
 export const MAX_SCREENSHOTS = 9
 
 export function vlConfigured() {
@@ -32,6 +47,11 @@ export class VlExtractError extends Error {
     this.code = code
     this.name = "VlExtractError"
   }
+}
+
+export function errorIfTruncated(finishReason: string | null | undefined): VlExtractError | null {
+  if (finishReason === "length") return new VlExtractError("truncated", TRUNCATED_VL_MESSAGE)
+  return null
 }
 
 export const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程师）助理。用户会按时间顺序上传多张微信或飞书的技术支持聊天截图，你要合并为同一会话，整理成结构化的技术支持记录。
@@ -58,8 +78,8 @@ export const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用�
   "process": "排查与沟通过程，用 1. 2. 3. 分步",
   "solution": "最终解决方案或当前结论",
   "needs": [{"pain": "用户痛点", "idea": "改进或工具想法", "type": "${NEED_TYPES.join("|")}"}],
-  ${VL_TRANSCRIPT_SCHEMA},
-  "uncertain": ["需要人工确认的点"]
+  "uncertain": ["需要人工确认的点"],
+  ${VL_TRANSCRIPT_SCHEMA}
 }`
 
 function mimeOf(buf: Buffer): string {
@@ -75,13 +95,16 @@ function nullToEmpty(v: unknown): string {
   return String(v)
 }
 
-export function normalizeVlDraft(d: Record<string, unknown>): Partial<RecordDraft> {
+export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string } = {}): Partial<RecordDraft> {
   const needs = Array.isArray(d.needs) ? d.needs : []
   const uncertain = Array.isArray(d.uncertain) ? d.uncertain.map((u) => String(u)) : []
   const dateRaw = d.date
   const date =
     typeof dateRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : undefined
-  const transcribed = applyTranscript(d.transcript, uncertain)
+  const transcribed = applyTranscript(d.transcript, uncertain, {
+    me: ctx.me,
+    contact: nullToEmpty(d.contact),
+  })
   return {
     title: nullToEmpty(d.title),
     ...(date ? { date } : {}),
@@ -188,8 +211,10 @@ export async function extractFromScreenshots(
   const hint = [
     opts.profile ? `【我的背景】\n${opts.profile}` : "",
     opts.customer ? `【客户】${opts.customer}` : "",
-    opts.me ? `【我在聊天中的昵称】${opts.me}（其余发言人默认是客户方）` : "",
-    `【说明】以上共 ${compressed.length} 张截图，按顺序为同一会话。请逐字转写到 transcript，并只输出 JSON。`,
+    opts.me
+      ? `【我在聊天中的昵称】${opts.me}。截图不显示昵称时，右侧气泡用这个名字，左侧用客户联系人，没有联系人就写「客户」。`
+      : "【昵称】截图不显示昵称时，右侧气泡写「我」，左侧写客户联系人，没有就写「客户」。",
+    `【说明】以上共 ${compressed.length} 张截图，按顺序为同一会话。请先写结构化字段，transcript 放在 JSON 最后，并只输出 JSON。`,
   ]
     .filter(Boolean)
     .join("\n\n")
@@ -206,6 +231,7 @@ export async function extractFromScreenshots(
       body: JSON.stringify({
         model: DASHSCOPE_VL_MODEL,
         temperature: 0.2,
+        max_tokens: resolveVlMaxTokens(),
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: EXTRACT_VL_SYSTEM },
@@ -227,14 +253,18 @@ export async function extractFromScreenshots(
   const rawText = await res.text()
   if (!res.ok) throw mapHttpError(res.status, rawText)
 
-  let parsedApi: { choices?: Array<{ message?: { content?: string } }> }
+  let parsedApi: { choices?: Array<{ finish_reason?: string | null; message?: { content?: string } }> }
   try {
     parsedApi = JSON.parse(rawText) as typeof parsedApi
   } catch {
     throw new VlExtractError("parse_error", "通义 VL 返回无法解析，请改用粘贴文字")
   }
 
-  const text = parsedApi.choices?.[0]?.message?.content ?? ""
+  const choice = parsedApi.choices?.[0]
+  const truncated = errorIfTruncated(choice?.finish_reason)
+  if (truncated) throw truncated
+
+  const text = choice?.message?.content ?? ""
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) {
     throw new VlExtractError("parse_error", "通义 VL 未返回 JSON，请改用粘贴文字")
@@ -247,10 +277,11 @@ export async function extractFromScreenshots(
     throw new VlExtractError("parse_error", "通义 VL JSON 解析失败，请改用粘贴文字")
   }
 
+  const speakerCtx = { me: opts.me, contact: typeof draftObj.contact === "string" ? draftObj.contact : "" }
   return {
     mode: "ai",
-    draft: normalizeVlDraft(draftObj),
-    transcript: parseTranscript(draftObj.transcript),
+    draft: normalizeVlDraft(draftObj, { me: opts.me }),
+    transcript: parseTranscript(draftObj.transcript, speakerCtx),
     source: "screenshot",
     imageCount: compressed.length,
   }

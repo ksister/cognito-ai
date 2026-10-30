@@ -10,7 +10,14 @@ import {
   parseTranscript,
   resolveExtractedChat,
 } from "./transcript"
-import { EXTRACT_VL_SYSTEM, normalizeVlDraft } from "./vl"
+import {
+  EXTRACT_VL_SYSTEM,
+  QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS,
+  TRUNCATED_VL_MESSAGE,
+  errorIfTruncated,
+  normalizeVlDraft,
+  resolveVlMaxTokens,
+} from "./vl"
 
 const FIXTURE = {
   title: "极耳定位偏移",
@@ -46,6 +53,7 @@ describe("VL transcript", () => {
     expect(EXTRACT_VL_SYSTEM).toContain("逐字转写")
     expect(EXTRACT_VL_SYSTEM).toContain("不要自己添加")
     expect(EXTRACT_VL_SYSTEM).not.toContain("请输出首行 [OCR")
+    expect(EXTRACT_VL_SYSTEM.lastIndexOf('"transcript"')).toBeGreaterThan(EXTRACT_VL_SYSTEM.lastIndexOf('"uncertain"'))
 
     const draft = normalizeVlDraft(FIXTURE)
     expect(draft.chat).toBe(EXPECTED_CHAT)
@@ -61,8 +69,8 @@ describe("VL transcript", () => {
         "小李：型号是 V4.3",
       ]),
     ).toEqual([
-      { speaker: "王工", text: "读码率 92%，要求 99.5%" },
-      { speaker: "小李", text: "型号是 V4.3" },
+      { speaker: "王工", text: "读码率 92%，要求 99.5%", kind: "speech" },
+      { speaker: "小李", text: "型号是 V4.3", kind: "speech" },
     ])
 
     const chat = formatScreenshotChat(parseTranscript("张工：比值 1:2\n[OCR 转写，以截图为准]\n"))
@@ -81,6 +89,69 @@ describe("VL transcript", () => {
     expect(resolveExtractedChat("paste", pasted, undefined)).toBe(pasted)
     expect(resolveExtractedChat("screenshot", pasted, EXPECTED_CHAT)).toBe(EXPECTED_CHAT)
     expect(resolveExtractedChat(undefined, pasted, EXPECTED_CHAT)).toBe(pasted)
+  })
+
+  it("returns truncated when the VL finish_reason is length", () => {
+    expect(QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS).toBe(32768)
+    expect(resolveVlMaxTokens("")).toBe(32768)
+    expect(resolveVlMaxTokens("nope")).toBe(32768)
+    expect(resolveVlMaxTokens("8192")).toBe(8192)
+    const err = errorIfTruncated("length")
+    expect(err?.code).toBe("truncated")
+    expect(err?.message).toBe(TRUNCATED_VL_MESSAGE)
+    expect(errorIfTruncated("stop")).toBeNull()
+    expect(errorIfTruncated(undefined)).toBeNull()
+  })
+
+  it("keeps time separators as standalone lines", () => {
+    const time = "—— 10月28日 09:12 ——"
+    const chat = formatScreenshotChat(
+      parseTranscript([
+        { kind: "time", text: time },
+        { speaker: "张工", text: "偏了 0.3mm" },
+        "—— 10月28日 09:40 ——",
+      ]),
+    )
+    expect(chat).toBe(
+      [OCR_TRANSCRIPT_MARKER, time, "张工：偏了 0.3mm", "—— 10月28日 09:40 ——"].join("\n"),
+    )
+    expect(chat).not.toContain("未知：")
+    expect(applyTranscript([{ kind: "time", text: "10月28日 09:12" }], []).uncertain).toEqual([])
+  })
+
+  it("formats image, file, and voice lines with a speaker", () => {
+    const chat = formatScreenshotChat(
+      parseTranscript([
+        { speaker: "张工", text: "[图片]" },
+        { speaker: "张工", text: "[文件] 参数表.xlsx" },
+        { speaker: "小李", text: "[语音]" },
+      ]),
+    )
+    expect(chat).toBe(
+      [OCR_TRANSCRIPT_MARKER, "张工：[图片]", "张工：[文件] 参数表.xlsx", "小李：[语音]"].join("\n"),
+    )
+  })
+
+  it("infers a speaker from bubble side when the nickname is missing", () => {
+    const named = formatScreenshotChat(
+      parseTranscript(
+        [
+          { side: "right", text: "我先看下日志" },
+          { side: "left", text: "读码率只有 92%" },
+        ],
+        { me: "小李", contact: "王工" },
+      ),
+    )
+    expect(named).toBe([OCR_TRANSCRIPT_MARKER, "小李：我先看下日志", "王工：读码率只有 92%"].join("\n"))
+
+    const fallback = formatScreenshotChat(
+      parseTranscript([
+        { side: "right", text: "在" },
+        { side: "左", text: "好" },
+      ]),
+    )
+    expect(fallback).toBe([OCR_TRANSCRIPT_MARKER, "我：在", "客户：好"].join("\n"))
+    expect(applyTranscript([{ side: "left", text: "好" }], []).uncertain).toEqual([])
   })
 })
 

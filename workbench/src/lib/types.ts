@@ -68,7 +68,7 @@ export type CustomerSummary = CustomerProfile & {
   needCount: number
 }
 
-export type ExtractErrorCode = "timeout" | "auth" | "rate_limit" | "unsafe" | "parse_error" | "partial"
+export type ExtractErrorCode = "timeout" | "auth" | "rate_limit" | "unsafe" | "parse_error" | "partial" | "truncated"
 
 export type FeishuPushStepResult = {
   step: string
@@ -85,10 +85,12 @@ export type FeishuPushResult = {
   code?: string | number
 }
 
-/** One spoken line from a screenshot VL transcript, before formatting into `chat`. */
+/** One line from a screenshot VL transcript, before formatting into `chat`. */
 export type TranscriptTurn = {
   speaker: string
   text: string
+  /** `time` is a standalone separator such as `—— 10月28日 09:12 ——`, with no speaker. */
+  kind?: "speech" | "time"
 }
 
 export type ExtractResult = {
