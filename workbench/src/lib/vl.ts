@@ -48,7 +48,7 @@ export function vlTimeoutMessage(ms = VL_TIMEOUT_MS_DEFAULT): string {
       : minutes >= 1
         ? `（已等待约 ${Math.max(1, Math.round(minutes))} 分钟）`
         : `（已等待 ${Math.max(1, Math.round(ms / 1000))} 秒）`
-  return `通义 VL 请求超时${wait}，请改用粘贴文字。`
+  return `通义 VL 请求超时${wait}，请改用粘贴文字。截图较多时可分两批上传。`
 }
 
 export const MAX_SCREENSHOTS = 9
