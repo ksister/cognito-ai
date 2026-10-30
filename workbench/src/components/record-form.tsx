@@ -93,6 +93,8 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const [vlError, setVlError] = useState<string>()
   const fileRef = useRef<HTMLInputElement>(null)
   const dragRef = useRef(false)
+  const shotsRef = useRef(shots)
+  shotsRef.current = shots
 
   useEffect(() => {
     const saved = localStorage.getItem("ae.me")
@@ -119,7 +121,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       toast.error("请选择图片文件")
       return
     }
-    const room = MAX_SHOTS - shots.length
+    const room = MAX_SHOTS - shotsRef.current.length
     if (room <= 0) {
       toast.error(`最多 ${MAX_SHOTS} 张截图，无法再加入`)
       return
@@ -133,10 +135,65 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       const compressed = await compressImageFile(f)
       next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file: compressed, url: URL.createObjectURL(compressed) })
     }
-    setShots((p) => [...p, ...next])
+    setShots((p) => {
+      const left = MAX_SHOTS - p.length
+      if (left <= 0) {
+        for (const s of next) URL.revokeObjectURL(s.url)
+        return p
+      }
+      const take = next.slice(0, left)
+      for (const s of next.slice(left)) URL.revokeObjectURL(s.url)
+      return [...p, ...take]
+    })
     setConfirmed(false)
     setVlError(undefined)
   }
+
+  function filesFromClipboard(data: DataTransfer | null): File[] {
+    if (!data) return []
+    const out: File[] = []
+    const seen = new Set<string>()
+    const push = (f: File | null) => {
+      if (!f || !f.type.startsWith("image/")) return
+      const key = `${f.name}-${f.size}-${f.lastModified}-${f.type}`
+      if (seen.has(key)) return
+      seen.add(key)
+      out.push(f)
+    }
+    if (data.items) {
+      for (const item of Array.from(data.items)) {
+        if (item.kind === "file" && item.type.startsWith("image/")) push(item.getAsFile())
+      }
+    }
+    if (data.files?.length) {
+      for (const f of Array.from(data.files)) push(f)
+    }
+    return out
+  }
+
+  function handleShotPaste(e: { clipboardData: DataTransfer | null; preventDefault(): void; stopPropagation(): void }) {
+    const files = filesFromClipboard(e.clipboardData)
+    if (!files.length) return
+    e.preventDefault()
+    e.stopPropagation()
+    void addFiles(files)
+  }
+
+  useEffect(() => {
+    const onWinPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t) {
+        const tag = t.tagName
+        if (tag === "TEXTAREA" || tag === "INPUT" || t.isContentEditable) return
+      }
+      const files = filesFromClipboard(e.clipboardData)
+      if (!files.length) return
+      e.preventDefault()
+      void addFiles(files)
+    }
+    window.addEventListener("paste", onWinPaste)
+    return () => window.removeEventListener("paste", onWinPaste)
+  }, [])
 
   function removeShot(id: string) {
     setShots((p) => {
@@ -303,8 +360,17 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
           {!editing && (
             <>
               <div
-                className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-10 text-center transition hover:bg-primary/10"
+                role="button"
+                tabIndex={0}
+                className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-10 text-center transition hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => fileRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    fileRef.current?.click()
+                  }
+                }}
+                onPaste={handleShotPaste}
                 onDragEnter={(e) => {
                   e.preventDefault()
                   dragRef.current = true
@@ -317,8 +383,8 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 }}
               >
                 <ImagePlus className="size-8 text-primary" />
-                <div className="text-sm font-medium">点击或拖拽上传截图</div>
-                <div className="text-xs text-muted-foreground">支持 JPG/PNG/WebP · 最多 {MAX_SHOTS} 张</div>
+                <div className="text-sm font-medium">点击、拖拽或 Ctrl+V 粘贴截图</div>
+                <div className="text-xs text-muted-foreground">支持 JPG/PNG/WebP · 最多 {MAX_SHOTS} 张 · 可连续粘贴累加</div>
                 <input
                   ref={fileRef}
                   type="file"
