@@ -91,6 +91,7 @@ updated: '2026-10-15T00:00:00.000Z'
       needs: [],
       uncertain: [],
       chat: "",
+      screenshots: [],
       site: "示例一号线",
       support_type: "bug确认",
       resolution: "",
