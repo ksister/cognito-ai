@@ -188,6 +188,27 @@ describe("feishu table schema", () => {
     expect(fields.fld_example_channel).toBe("微信")
     expect(fields.fld_example_person).toEqual([{ id: "ou_example" }])
     expect(fields.fld_example_file).toBeUndefined()
+    const dated = buildCreateFields(
+      draft({
+        date: "2026-10-15",
+        dimensions: ["2D", "3D"],
+        customer: "示例-星河电子",
+      }),
+      parseFeishuTableSchema({
+        version: 1,
+        people: { fieldName: "处理人", fieldId: "fld_example_person", defaultOpenId: "ou_self" },
+        columns: [
+          { name: "创建时间", type: "date", key: "date", fieldId: "fld_example_date" },
+          { name: "检测维度", type: "multi", key: "dimensions", fieldId: "fld_example_dims", options: ["2D", "3D"] },
+        ],
+      }),
+      undefined,
+      undefined,
+      [],
+    )
+    expect(dated.fld_example_date).toBe(Date.parse("2026-10-15T00:00:00"))
+    expect(dated.fld_example_dims).toEqual(["2D", "3D"])
+    expect(dated.fld_example_person).toEqual([{ id: "ou_self" }])
     expect(schemaPasteCells(schema, draft({ channel: "微信" }))[2]).toBe("")
   })
 

@@ -32,20 +32,24 @@ npm run dev                   # 打开 http://localhost:4317
 「复制为飞书行」按 `KB_DIR/config/feishu-table.json` 的列顺序输出。仓库只带虚构示例 `workbench/config/feishu-table.example.json`，没有这份私有配置时会提示路径，不会退回旧的 11 列模板。
 
 1. 没设 `KB_DIR` 时，工作台用仓库根目录，配置文件就是 `config/feishu-table.json`。这个路径已在根目录 `.gitignore` 里，不会被提交。设了 `KB_DIR` 就放到那个目录的 `config/feishu-table.json`。
-2. 记一笔页的「从飞书同步选项」用 `lark-cli` 读当前表的选项，先列出增删，确认后才写入私有配置，并且只改 `options`。
+2. 记一笔页的「从飞书同步字段」用 `lark-cli` 按列名对齐。确认后只把选项和 `fieldId` 写入私有配置。本人 open_id 请手填 `people.defaultOpenId`（`ou_…`），同步不会写入它。
 3. 复制示例后再改。列顺序必须与测试表「工作台粘贴」视图从左到右一致。`type`：`text` 文本、`date` 日期、`select` 单选、`multi` 多选、`person` 人员、`attachment` 附件。
 4. 示例里的客户公司是虚构的。处理状态、支持类型、解决方式等用的是字段说明里的选项名，不含客户名或同事名。真实客户选项只放在私有 `feishu-table.json`。
 5. 多选粘贴分隔符是文件顶部的 `multiSeparator`，默认英文逗号 `,`。测试表如果认顿号或其他符号，只改这一处。
-6. 处理人、附件不在这 20 列里，仍在飞书里手填。人员列如果以后加进配置，复制时先留空（粘贴姓名能否识别还没在真表上试过）。
-7. `fieldId` 只给以后的 cli/api 建行用，复制粘贴不需要。默认写入通道是 `lark-cli`（`LARK_PUSH_MODE=cli`）。复制为飞书行只在直写失败时兜底。
+6. 处理人不在粘贴的 20 列里。cli 写入用 `people.fieldId`（同步字段时按列名「处理人」填上）和 `people.defaultOpenId`（本人的 `ou_…`，只能手填在私有配置里）。
+7. 默认通道是 `lark-cli`（`LARK_PUSH_MODE=cli`）。cli 按 `fieldId` 建行：文本和单选是字符串，多选是字符串数组，日期是毫秒时间戳，处理人是 `[{id}]`。没有 fieldId 的列会跳过并警告。复制为飞书行只是失败时的兜底。
 
-### 粘贴验收（合并前，在测试表上做）
-1. 检出本 PR 分支，`cd workbench && npm install && npm run dev`。
-2. 把 `workbench/config/feishu-table.example.json` 复制到 `KB_DIR/config/feishu-table.json`（没设 `KB_DIR` 就是仓库根的 `config/feishu-table.json`，已被 gitignore）。再用「从飞书同步选项」换成测试表的真实选项，确认差异后再写入。
-3. 记一笔，保存一条测试记录，点「复制为飞书行」。
-4. 打开测试表的「工作台粘贴」视图，选中一行的第一个单元格粘贴。核对 20 列是否对齐，多选分隔符是否被飞书拆开，人员列仍需手填。
+### 验收
+**主验收：cli 把 20 列都写对**
+1. 检出本分支，`cd workbench && npm install`。`.env.local` 使用默认 `LARK_PUSH_MODE=cli`，并填写测试表的 `LARK_BASE_TOKEN`、`LARK_TABLE_ID`。`lark-cli` 已用个人身份登录。
+2. 把 `workbench/config/feishu-table.example.json` 复制到 `KB_DIR/config/feishu-table.json`（没设 `KB_DIR` 就是仓库根的 `config/feishu-table.json`，已被 gitignore）。
+3. `npm run dev`，打开记一笔，点「从飞书同步字段」，核对选项和 fieldId 的差异后再确认写入。在同一文件填 `people.defaultOpenId` 为自己的 `ou_…`。飞书里仍叫「字段1 / 字段2 / 字段3」的列对不上「本地记录ID」「需求线索」：确认哪一列是哪一个之后，在私有配置里给该列加 `feishuName`（例如 `"feishuName": "字段2"`），再同步一次。不要猜，也不要提交这个文件。
+4. 保存一条测试记录。到测试表核对这一行：20 列都在对应列上，多选是多个选项，处理人是本人。
 
-把多选分隔符和人员列的粘贴结果写进 PR，等技术总监写明「通过，可合并」后再合并。不要 squash。
+**次验收：剪贴板兜底**
+点「复制为飞书行」。点击当下会把接口 Promise 交给 `ClipboardItem`。粘到「工作台粘贴」视图只作对照。浏览器不支持时，页面给出已全选的文本，按 Ctrl 或 Cmd + C。多选分隔符默认英文逗号，不对就改 `multiSeparator`。
+
+等真机 cli 验收和「通过，可合并」之后再合并。不要 squash，不要自行合入。
 
 新增且可选的 frontmatter 键：`site`、`support_type`、`resolution`、`fixed_version`、`dimensions`、`inspection_types`、`industries`、`case_visibility`、`docs`，以及自动生成的 `local_id`（`AE-YYYYMMDD-NN`）。旧记录没有这些键也能打开。`channel`、`module` 仍留在本地，不导出；`category` 不再出现在表单里，旧值保留。
 
