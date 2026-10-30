@@ -17,6 +17,10 @@ import {
   errorIfTruncated,
   normalizeVlDraft,
   resolveVlMaxTokens,
+  resolveVlTimeoutMs,
+  VL_TIMEOUT_MS_DEFAULT,
+  vlTimeoutMessage,
+  vlTransportError,
 } from "./vl"
 
 const FIXTURE = {
@@ -152,6 +156,24 @@ describe("VL transcript", () => {
     )
     expect(fallback).toBe([OCR_TRANSCRIPT_MARKER, "我：在", "客户：好"].join("\n"))
     expect(applyTranscript([{ side: "left", text: "好" }], []).uncertain).toEqual([])
+  })
+})
+
+describe("VL timeout", () => {
+  it("defaults to 5 minutes and tells the user to paste", () => {
+    expect(VL_TIMEOUT_MS_DEFAULT).toBe(300_000)
+    expect(resolveVlTimeoutMs("")).toBe(300_000)
+    expect(resolveVlTimeoutMs("0")).toBe(300_000)
+    expect(resolveVlTimeoutMs("nope")).toBe(300_000)
+    expect(resolveVlTimeoutMs("90000")).toBe(90_000)
+    expect(vlTimeoutMessage(300_000)).toBe("通义 VL 请求超时（已等待 5 分钟），请改用粘贴文字。")
+    const err = vlTransportError(Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }), 300_000)
+    expect(err.code).toBe("timeout")
+    expect(err.message).toContain("请改用粘贴文字")
+    expect(err.message).toContain("5 分钟")
+    const network = vlTransportError(new Error("connect ECONNREFUSED"))
+    expect(network.code).toBe("parse_error")
+    expect(network.message).toContain("可改用粘贴文字")
   })
 })
 
