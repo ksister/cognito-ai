@@ -63,7 +63,12 @@ export async function POST(req: Request) {
     const rec = await createRecord(draft)
     let screenshots: string[] = []
     if (screenshotBufs.length) {
-      screenshots = await saveScreenshotBatch(rec.customer, screenshotBufs)
+      screenshots = await saveScreenshotBatch(rec.customer, screenshotBufs, {
+        date: rec.date,
+        title: rec.title,
+      })
+      const saved = await updateRecord(rec.customer, rec.file.replace(/\.md$/, ""), { screenshots })
+      rec.screenshots = saved.screenshots
     }
 
     const wantPush = side.push !== false

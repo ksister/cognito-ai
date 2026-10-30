@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { PageHeader, Prose, Section, customerHref, recordHref } from "@/components/bits"
 import { CopyFeishuButton, StatusSelect } from "@/components/record-actions"
+import { ShotThumbs } from "@/components/shot-thumbs"
 import { getRecord } from "@/lib/kb"
 
 export const dynamic = "force-dynamic"
@@ -43,6 +44,17 @@ export default async function RecordPage({ params }: PageProps<"/records/[custom
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="space-y-6">
+          {r.screenshots.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>截图</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ShotThumbs customer={r.customer} names={r.screenshots} />
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardContent className="space-y-5">
               <Section title="问题描述">

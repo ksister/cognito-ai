@@ -2,6 +2,7 @@ import "server-only"
 import fs from "node:fs/promises"
 import path from "node:path"
 import matter from "gray-matter"
+import { allocateScreenshotNames } from "./screenshot-name"
 import {
   CHANNELS,
   NEED_TYPES,
@@ -128,6 +129,7 @@ export function recordToMarkdown(r: SupportRecord): string {
     needs: r.needs,
     created: r.created,
     updated: r.updated,
+    ...(r.screenshots?.length ? { screenshots: r.screenshots } : {}),
   }
   const fence = "````"
   const body = [
@@ -183,7 +185,14 @@ export function markdownToRecord(customer: string, file: string, raw: string): S
     thoughts: s[SECTION.thoughts] ?? "",
     uncertain: parseList(s[SECTION.uncertain] ?? ""),
     chat: s[SECTION.chat] ?? "",
+    screenshots: parseScreenshots(data.screenshots),
   }
+}
+
+function parseScreenshots(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => str(x).trim()).filter(Boolean)
+  if (typeof v === "string" && v.trim()) return [v.trim()]
+  return []
 }
 
 function cleanDraft(d: RecordDraft): RecordDraft {
@@ -197,6 +206,7 @@ function cleanDraft(d: RecordDraft): RecordDraft {
     needs: parseNeeds(d.needs),
     uncertain: (d.uncertain ?? []).map((u) => u.trim()).filter(Boolean),
     chat: (d.chat ?? "").replace(/`{4,}/g, "```"),
+    screenshots: parseScreenshots(d.screenshots),
   }
 }
 
@@ -371,25 +381,23 @@ export function filePath(customer: string, name: string): string {
 
 
 /**
- * 确认保存后备份原图。
- * 路径约定（相对仓库根）：customers/<客户名>/files/截图-YYYYMMDD-序号.jpg
- * 日期 = 保存当日本地日历日（此处用 localDate，写死为「保存日」而非聊天日）。
- * 同批序号从 1 起；若当日已有同名文件，则从下一个空闲序号起连续编号。
+ * 确认保存后备份截图。
+ * 新文件：`<记录 date>-<标题前 20 字>-<序号>.jpg`，date 用聊天日期。
+ * 已有的 `截图-YYYYMMDD-N.jpg` 不改名；只在新名字冲突时顺延序号。
  */
-export async function saveScreenshotBatch(customer: string, images: Buffer[]): Promise<string[]> {
+export async function saveScreenshotBatch(
+  customer: string,
+  images: Buffer[],
+  meta: { date: string; title: string },
+): Promise<string[]> {
   if (!images.length) return []
   const name = safeName(customer)
   const dir = path.join(customerDir(name), "files")
   await fs.mkdir(dir, { recursive: true })
-  // 日期 = 保存当日本地日历日 → YYYYMMDD
-  const ymd = localDate().replace(/-/g, "")
-  let start = 1
-  while (await exists(path.join(dir, `截图-${ymd}-${start}.jpg`))) start++
-  const saved: string[] = []
+  const existing = (await exists(dir) ? await fs.readdir(dir) : []).filter((n) => !n.startsWith("."))
+  const saved = allocateScreenshotNames(existing, meta.date, meta.title, images.length)
   for (let i = 0; i < images.length; i++) {
-    const file = `截图-${ymd}-${start + i}.jpg`
-    await fs.writeFile(within(dir, file), images[i])
-    saved.push(file)
+    await fs.writeFile(within(dir, saved[i]), images[i])
   }
   return saved
 }

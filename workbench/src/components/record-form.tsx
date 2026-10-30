@@ -866,7 +866,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:px-8">
           <span className="truncate text-xs text-muted-foreground">
             保存为 Markdown：customers/{d.customer || "<客户>"}/records/
-            {shots.length > 0 ? ` + files/截图-日期-1..${shots.length}.jpg` : ""}
+            {shots.length > 0 ? ` + files/${d.date || "聊天日期"}-标题-1..${shots.length}.jpg` : ""}
             {saveBlockedReason ? ` · ${saveBlockedReason}` : ""}
             {saving && !editing
               ? ` · 进度：${
