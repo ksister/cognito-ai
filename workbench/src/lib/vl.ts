@@ -30,6 +30,27 @@ export function resolveVlMaxTokens(raw = process.env.DASHSCOPE_VL_MAX_TOKENS): n
   return Math.floor(n)
 }
 
+/** Default VL HTTP timeout: 5 minutes. */
+export const VL_TIMEOUT_MS_DEFAULT = 5 * 60 * 1000
+
+export function resolveVlTimeoutMs(raw = process.env.DASHSCOPE_VL_TIMEOUT_MS): number {
+  if (raw == null || raw.trim() === "") return VL_TIMEOUT_MS_DEFAULT
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return VL_TIMEOUT_MS_DEFAULT
+  return Math.floor(n)
+}
+
+export function vlTimeoutMessage(ms = VL_TIMEOUT_MS_DEFAULT): string {
+  const minutes = ms / 60_000
+  const wait =
+    minutes >= 1 && Number.isInteger(minutes)
+      ? `（已等待 ${minutes} 分钟）`
+      : minutes >= 1
+        ? `（已等待约 ${Math.max(1, Math.round(minutes))} 分钟）`
+        : `（已等待 ${Math.max(1, Math.round(ms / 1000))} 秒）`
+  return `通义 VL 请求超时${wait}，请改用粘贴文字。截图较多时可分两批上传。`
+}
+
 export const MAX_SCREENSHOTS = 9
 
 export function vlConfigured() {
@@ -52,6 +73,13 @@ export class VlExtractError extends Error {
 export function errorIfTruncated(finishReason: string | null | undefined): VlExtractError | null {
   if (finishReason === "length") return new VlExtractError("truncated", TRUNCATED_VL_MESSAGE)
   return null
+}
+
+export function vlTransportError(e: unknown, timeoutMs = resolveVlTimeoutMs()): VlExtractError {
+  const err = e as Error
+  const timedOut = err?.name === "TimeoutError" || err?.name === "AbortError" || /aborted|timeout/i.test(err?.message ?? "")
+  if (timedOut) return new VlExtractError("timeout", vlTimeoutMessage(timeoutMs))
+  return new VlExtractError("parse_error", `通义 VL 网络错误：${err?.message || "未知"}。可改用粘贴文字。`)
 }
 
 export const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程师）助理。用户会按时间顺序上传多张微信或飞书的技术支持聊天截图，你要合并为同一会话，整理成结构化的技术支持记录。
@@ -238,16 +266,10 @@ export async function extractFromScreenshots(
           { role: "user", content },
         ],
       }),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(resolveVlTimeoutMs()),
     })
   } catch (e) {
-    const msg = (e as Error).name === "TimeoutError" || /aborted|timeout/i.test((e as Error).message)
-      ? "通义 VL 请求超时"
-      : `通义 VL 网络错误：${(e as Error).message}`
-    throw new VlExtractError(
-      /timeout|aborted/i.test(msg) ? "timeout" : "parse_error",
-      msg + "。可改用粘贴文字。",
-    )
+    throw vlTransportError(e)
   }
 
   const rawText = await res.text()

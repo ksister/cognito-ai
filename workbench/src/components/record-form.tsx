@@ -268,7 +268,8 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   }
 
   async function extract() {
-    const useShots = shots.length > 0
+    const pasteReady = showPaste && d.chat.trim().length > 0
+    const useShots = shots.length > 0 && !pasteReady
     if (!useShots && !d.chat.trim()) {
       toast.error("请先上传截图，或展开粘贴文字")
       return
@@ -534,7 +535,15 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
           <div className="flex flex-wrap items-center gap-2">
             <Button onClick={extract} disabled={extracting || editing}>
               {extracting ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              {extracting ? "整理中…" : extracted ? "重新整理" : shots.length ? "从截图提取" : "AI 整理"}
+              {extracting
+                ? "整理中…"
+                : showPaste && d.chat.trim()
+                  ? "用粘贴文字整理"
+                  : extracted
+                    ? "重新整理"
+                    : shots.length
+                      ? "从截图提取"
+                      : "AI 整理"}
             </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => setShowPaste((v) => !v)}>
               {showPaste ? "收起文字粘贴" : "改用粘贴文字"}
@@ -548,7 +557,11 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
               <p className="font-medium">截图提取失败</p>
               <p className="mt-1">{vlError}</p>
-              <p className="mt-2 text-xs">可展开「粘贴文字」走文字提取（DeepSeek），不影响已上传截图在确认保存后的备份。</p>
+              <p className="mt-2 text-xs">
+                {showPaste
+                  ? "文字粘贴已展开。贴上聊天后点「用粘贴文字整理」。已上传的截图仍会在确认保存后备份。"
+                  : "点「改用粘贴文字」，贴上聊天后再整理。已上传的截图仍会在确认保存后备份。"}
+              </p>
             </div>
           )}
 
