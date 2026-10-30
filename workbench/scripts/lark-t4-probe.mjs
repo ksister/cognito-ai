@@ -8,6 +8,12 @@
  * 调用方式与工作台一致：`lark-cli base … --as user --format json`，不经 shell。
  * 更新用官方 `base +record-upsert --record-id`（有 id 则更新，无 id 才创建）。
  * 附件用与 `lark-bitable.ts` 相同的 `base +record-upload-attachment`。
+ * lark-cli 1.0.56：`--file` 必须是当前目录下的相对路径（写到 `.tmp/` 再 `path.relative`）。绝对路径会被拒绝。
+ * 创建成功后先等 1.5 秒再第一次更新，否则可能返回 800030405 not_found。
+ * `+record-upsert` 的 record_id 在 `data.record.record_id_list[0]`，不是 `data.record_id`。
+ * `--json @file.json` 必须是不带 BOM 的 UTF-8。PowerShell `Set-Content -Encoding UTF8` 会写入 BOM，CLI 报 invalid character ï。本脚本用 Node 写文件，不带 BOM。
+ * 多选字段用字符串数组，例如 {"fldWlbihaw":["尺寸测量","外观检测"]}。
+ * 人员字段不能写显示名字符串数组（会 not_found）。用 open_id 对象：{"fldR5MJ3au":[{"id":"ou_…"}]}，写入后界面显示对应人名。
  *
  * 只读写环境变量里的测试表。生产表 LARK_TABLE_ID 只用来比对，绝不传给 CLI。
  *
@@ -35,7 +41,6 @@
  */
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -191,12 +196,27 @@ function isAttachmentField(field) {
   return type === "17" || type === "attachment" || ui === "attachment"
 }
 
-function recordIdOf(json) {
+export function writeUtf8JsonFile(absPath, value) {
+  const text = JSON.stringify(value)
+  fs.mkdirSync(path.dirname(absPath), { recursive: true })
+  fs.writeFileSync(absPath, text, { encoding: "utf8" })
+  const buf = fs.readFileSync(absPath)
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    throw new Error("JSON 文件带了 UTF-8 BOM。PowerShell Set-Content -Encoding UTF8 会这样，lark-cli 会报 invalid character ï。")
+  }
+  return path.relative(process.cwd(), absPath).split(path.sep).join("/")
+}
+
+export function recordIdOf(json) {
   if (!json) return ""
   const data = json.data && typeof json.data === "object" ? json.data : json
   if (typeof data.record_id === "string") return data.record_id
   const record = data.record
-  if (record && typeof record === "object" && typeof record.record_id === "string") return record.record_id
+  if (record && typeof record === "object") {
+    if (typeof record.record_id === "string") return record.record_id
+    // Live lark-cli +record-upsert: data.record.record_id_list = ["rec…"]
+    if (Array.isArray(record.record_id_list) && record.record_id_list[0]) return String(record.record_id_list[0])
+  }
   const list = data.record_id_list || json.record_id_list
   if (Array.isArray(list) && list[0]) return String(list[0])
   const records = data.records || data.items || []
@@ -280,20 +300,30 @@ async function main() {
   console.log(`text_field=${textLabel} attachment_field=${attachment ? fieldName(attachment) || fieldId(attachment) : "(none)"}`)
 
   const marker = `T4-probe ${new Date().toISOString()}`
+  const jsonFiles = []
+  function jsonAt(name, value) {
+    const abs = path.join(process.cwd(), ".tmp", name)
+    const rel = writeUtf8JsonFile(abs, value)
+    jsonFiles.push(abs)
+    return `@${rel}`
+  }
+  try {
   const created = await call("create", [
     "base",
     "+record-upsert",
     ...common.slice(0, 4),
     "--json",
-    JSON.stringify({ [textId]: `${marker} create` }),
+    jsonAt("create.json", { [textId]: `${marker} create` }),
     ...common.slice(4),
   ])
   const recordId = recordIdOf(created.json)
   if (!recordId || created.json?.created === false) {
     console.error("FAIL create 没有拿到 record_id。上面是 CLI 原文。")
-    process.exit(1)
+    throw new Error("create missing record_id")
   }
   console.log(`record_id=${recordId} created=${created.json?.created ?? "(see output)"}`)
+  console.log("wait_ms=1500 reason=immediate update can return 800030405 not_found")
+  await new Promise((resolve) => setTimeout(resolve, 1500))
 
   async function updateOnce(label, value) {
     const run = await call(label, [
@@ -303,7 +333,7 @@ async function main() {
       "--record-id",
       recordId,
       "--json",
-      JSON.stringify({ [textId]: value }),
+      jsonAt(`${label}.json`, { [textId]: value }),
       ...common.slice(4),
     ])
     const id = recordIdOf(run.json) || recordId
@@ -320,23 +350,32 @@ async function main() {
   if (!attachment || !fieldId(attachment)) {
     console.error("FAIL upload_attachment 测试表没有附件字段。可设置 LARK_TEST_ATTACHMENT_FIELD 为该表自己的字段 id。")
   } else {
-    const file = path.join(os.tmpdir(), `t4-probe-${Date.now()}.png`)
-    fs.writeFileSync(file, PNG)
-    const uploaded = await call("upload_attachment", [
-      "base",
-      "+record-upload-attachment",
-      ...common.slice(0, 4),
-      "--record-id",
-      recordId,
-      "--field-id",
-      fieldId(attachment),
-      "--file",
-      file,
-      ...common.slice(4),
-    ])
-    passAttach = uploaded.exitCode === 0 && !uploaded.json?.error
-    console.log(`${passAttach ? "PASS" : "FAIL"} upload_attachment exit=${uploaded.exitCode}`)
-    fs.rmSync(file, { force: true })
+    const dir = path.join(process.cwd(), ".tmp")
+    fs.mkdirSync(dir, { recursive: true })
+    const abs = path.join(dir, `t4-probe-${Date.now()}.png`)
+    const rel = path.relative(process.cwd(), abs).split(path.sep).join("/")
+    if (path.isAbsolute(rel) || rel.startsWith("..")) {
+      throw new Error("upload_attachment --file 必须是当前目录下的相对路径")
+    }
+    fs.writeFileSync(abs, PNG)
+    try {
+      const uploaded = await call("upload_attachment", [
+        "base",
+        "+record-upload-attachment",
+        ...common.slice(0, 4),
+        "--record-id",
+        recordId,
+        "--field-id",
+        fieldId(attachment),
+        "--file",
+        rel,
+        ...common.slice(4),
+      ])
+      passAttach = uploaded.exitCode === 0 && !uploaded.json?.error
+      console.log(`${passAttach ? "PASS" : "FAIL"} upload_attachment file=${rel} exit=${uploaded.exitCode}`)
+    } finally {
+      fs.rmSync(abs, { force: true })
+    }
   }
 
   const searched = await call("count_marker", [
@@ -360,14 +399,23 @@ async function main() {
   console.log(`${passAttach ? "PASS" : "FAIL"} upload_attachment`)
   console.log(`${pass2 && oneRow ? "PASS" : "FAIL"} second_update_same_record_id`)
   console.log(`record_id=${recordId}`)
-  if (pass1 && pass2 && passAttach && oneRow) process.exit(0)
-  process.exit(1)
+  if (!(pass1 && pass2 && passAttach && oneRow)) {
+    throw new Error("probe steps failed")
+  }
+  } finally {
+    for (const file of jsonFiles) fs.rmSync(file, { force: true })
+  }
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 if (isMain) {
-  main().catch((err) => {
-    console.error(`FAIL ${err instanceof Error ? err.message : String(err)}`)
-    process.exit(1)
-  })
+  main()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      if (message !== "probe steps failed" && message !== "create missing record_id") {
+        console.error(`FAIL ${message}`)
+      }
+      process.exit(1)
+    })
 }
