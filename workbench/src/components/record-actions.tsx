@@ -9,7 +9,8 @@ import { selectClass } from "@/components/bits"
 import { CopyFallback } from "@/components/copy-fallback"
 import { copyFetchedText } from "@/lib/copy-text"
 import type { FeishuSchemaState } from "@/lib/feishu-schema"
-import { STATUSES, type Status, type SupportRecord } from "@/lib/types"
+import { feishuFailureMessage, feishuOutcomeMessage } from "@/lib/lark-push-plan"
+import { STATUSES, type FeishuPushResult, type Status, type SupportRecord } from "@/lib/types"
 
 type ClipPayload = { text: string; warnings?: string[]; already?: string[]; error?: string }
 
@@ -58,7 +59,11 @@ export function StatusSelect({ record, statusOptions }: { record: SupportRecord;
         })
         if (res.ok) {
           toast.success(`状态已改为「${status}」`)
-          if (record.local_id) toast.message(`请在飞书搜索 ${record.local_id}，修改同一行，不要新建`)
+          if (record.feishuRecordId) {
+            toast.message(`点「同步飞书」会更新同一行 ${record.feishuRecordId}，不会新建`)
+          } else if (record.local_id) {
+            toast.message(`请在飞书搜索 ${record.local_id}，修改同一行，不要新建`)
+          }
           router.refresh()
         } else toast.error("更新失败")
       }}
@@ -95,6 +100,49 @@ function startRowCopy(
       if (box.payload) onOk(box.payload)
     })
     .catch((e: unknown) => showForManualCopy((e as Error).message || "ClipboardItem 写入失败"))
+}
+
+export function SyncFeishuButton({ record }: { record: SupportRecord }) {
+  const router = useRouter()
+  const [busy, setBusy] = useState(false)
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          const res = await fetch(apiPath(record), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ syncFeishu: true }),
+          })
+          const data = (await res.json()) as SupportRecord & { error?: string; feishu?: FeishuPushResult }
+          if (!res.ok) {
+            toast.error(data.error || "同步失败")
+            return
+          }
+          const fr = data.feishu
+          if (!fr) {
+            toast.error("没有飞书结果")
+            return
+          }
+          for (const warning of fr.warnings ?? []) toast.message(warning)
+          if (fr.ok) toast.success(feishuOutcomeMessage(fr.action, fr.recordId))
+          else toast.error(feishuFailureMessage(fr))
+          router.refresh()
+        } catch (e) {
+          toast.error((e as Error).message)
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      {busy ? <Loader2 className="animate-spin" /> : null}
+      同步飞书
+    </Button>
+  )
 }
 
 export function CopyFeishuButton({ record, schemaState }: { record: SupportRecord; schemaState: FeishuSchemaState }) {

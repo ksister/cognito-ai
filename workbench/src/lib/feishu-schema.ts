@@ -76,6 +76,7 @@ const RESERVED_KEYS = new Set([
   "feishu_synced",
   "feishu_record_id",
   "feishu_synced_at",
+  "feishu_attached",
   "needs",
   "created",
   "updated",

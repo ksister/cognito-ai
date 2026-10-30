@@ -4,7 +4,7 @@ import { AlertTriangle, ChevronLeft, Pencil } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { PageHeader, Prose, Section, customerHref, recordHref } from "@/components/bits"
-import { CopyFeishuButton, StatusSelect } from "@/components/record-actions"
+import { CopyFeishuButton, StatusSelect, SyncFeishuButton } from "@/components/record-actions"
 import { ShotThumbs } from "@/components/shot-thumbs"
 import { readRecordField, SPEC_STATUS_OPTIONS } from "@/lib/feishu-schema"
 import { loadFeishuSchemaState } from "@/lib/feishu-schema-load"
@@ -46,6 +46,7 @@ export default async function RecordPage({ params }: PageProps<"/records/[custom
       </Link>
       <PageHeader title={r.title}>
         <StatusSelect record={r} statusOptions={statusCol?.options ?? [...SPEC_STATUS_OPTIONS]} />
+        <SyncFeishuButton record={r} />
         <CopyFeishuButton record={r} schemaState={schemaState} />
         <Link
           href={`${recordHref(r)}/edit`}
@@ -115,7 +116,13 @@ export default async function RecordPage({ params }: PageProps<"/records/[custom
                   </div>
                 ))}
                 <dt className="text-muted-foreground">飞书</dt>
-                <dd>{r.feishuSynced ? "已同步" : "未同步"}</dd>
+                <dd>
+                  {r.feishuRecordId
+                    ? `${r.feishuSynced ? "已同步" : "待重推"} · ${r.feishuRecordId}`
+                    : r.feishuSynced
+                      ? "已标记同步。再点同步飞书会新建一行并记下行号"
+                      : "未同步"}
+                </dd>
               </dl>
             </CardContent>
           </Card>

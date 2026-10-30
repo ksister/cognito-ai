@@ -10,6 +10,16 @@ import {
   type FeishuTableSchema,
 } from "./feishu-schema"
 import { readFeishuTableSchema } from "./feishu-schema-load"
+import {
+  RECORD_NOT_READY_DELAY_MS,
+  cliRelativeFile,
+  extractCliRecordId,
+  isRecordNotReady,
+  omitAttachmentFields,
+  pushActionFor,
+  sameRowUpdateError,
+  screenshotsToUpload,
+} from "./lark-push-plan"
 import type { RecordDraft } from "./types"
 
 /** Field IDs for 技术支持表格 — locked by DoD */
@@ -45,6 +55,7 @@ export type LarkSelectOptions = {
 export type LarkPushStep =
   | "local"
   | "create"
+  | "update"
   | "upload"
   | "attach"
   | "config"
@@ -54,6 +65,10 @@ export type LarkPushStep =
 export type LarkPushResult = {
   ok: boolean
   recordId?: string
+  /** created = new row. updated = the stored feishu_record_id. */
+  action?: "created" | "updated"
+  /** Screenshot filenames uploaded on this call. */
+  attachedNames?: string[]
   steps: { step: LarkPushStep; ok: boolean; message?: string }[]
   warnings: string[]
   error?: string
@@ -70,6 +85,10 @@ export type LarkPushInput = {
   screenshotFiles?: { name: string; path: string }[]
   /** API-mode fallback buffers (optional if paths provided) */
   screenshots?: { name: string; data: Buffer }[]
+  /** When set, update this Feishu row instead of creating another. */
+  feishuRecordId?: string
+  /** Filenames already uploaded. Only names outside this list are uploaded again. */
+  attachedNames?: string[]
 }
 
 type LarkCfg = {
@@ -354,21 +373,59 @@ function extractFieldItems(json: Record<string, unknown> | null): FieldMeta[] {
 }
 
 function extractRecordId(json: Record<string, unknown> | null): string | undefined {
-  if (!json) return undefined
-  const data = (json.data as Record<string, unknown> | undefined) ?? json
-  const list =
-    (data.record_id_list as string[] | undefined) ||
-    (json.record_id_list as string[] | undefined) ||
-    []
-  if (Array.isArray(list) && list[0]) return String(list[0])
-  const records =
-    (data.records as { record_id?: string }[] | undefined) ||
-    (json.records as { record_id?: string }[] | undefined) ||
-    []
-  if (Array.isArray(records) && records[0]?.record_id) return String(records[0].record_id)
-  if (typeof data.record_id === "string") return data.record_id
-  if (typeof json.record_id === "string") return json.record_id
-  return undefined
+  return extractCliRecordId(json)
+}
+
+function attachmentFieldIds(schema: FeishuTableSchema): string[] {
+  return [
+    LARK_FIELDS.attachment,
+    ...schema.columns.filter((col) => col.type === "attachment" && col.fieldId).map((col) => col.fieldId as string),
+  ]
+}
+
+function fieldsForCliWrite(fields: Record<string, unknown>, schema: FeishuTableSchema): Record<string, unknown> {
+  return omitAttachmentFields(fields, attachmentFieldIds(schema))
+}
+
+async function retryIfNotReady<T>(fn: () => Promise<T>): Promise<T> {
+  const first = await fn()
+  const failed = first as { error?: unknown; code?: string | number }
+  if (typeof failed.error === "string" && failed.error && isRecordNotReady(failed.code, failed.error)) {
+    await new Promise((resolve) => setTimeout(resolve, RECORD_NOT_READY_DELAY_MS))
+    return fn()
+  }
+  return first
+}
+
+/**
+ * `--file` must be relative to the process cwd. Files outside cwd are copied
+ * under `.tmp/` for the duration of the CLI call, then removed.
+ */
+async function withCliRelativeFiles<T>(
+  files: { name: string; path: string }[],
+  fn: (staged: { name: string; path: string }[]) => Promise<T>,
+): Promise<T> {
+  const cwd = process.cwd()
+  const dir = path.join(cwd, ".tmp", `lark-attach-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  await fs.mkdir(dir, { recursive: true })
+  try {
+    const staged: { name: string; path: string }[] = []
+    for (const [i, file] of files.entries()) {
+      const direct = cliRelativeFile(cwd, file.path)
+      if (direct) {
+        staged.push({ name: file.name, path: direct })
+        continue
+      }
+      const dest = path.join(dir, `${i}-${path.basename(file.path)}`)
+      await fs.copyFile(file.path, dest)
+      const rel = cliRelativeFile(cwd, dest)
+      if (!rel) throw new Error("附件无法转成当前目录下的相对路径，lark-cli 会拒绝绝对路径")
+      staged.push({ name: file.name, path: rel })
+    }
+    return await fn(staged)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 }
 
 async function fetchFieldMetaViaCli(cliPath: string, cfg: LarkCfg): Promise<FieldMeta[]> {
@@ -485,6 +542,42 @@ async function batchCreateViaCli(
   })
 }
 
+/**
+ * Update one existing row. JSON is a flat { fieldId: value } object.
+ * `--record-id` is required so a missing id cannot fall through into a create.
+ */
+async function upsertViaCli(
+  cliPath: string,
+  cfg: LarkCfg,
+  recordId: string,
+  fields: Record<string, unknown>,
+): Promise<{ recordId: string } | { error: string; code: string | number }> {
+  return withTempJsonFile(fields, async (tmp) => {
+    const head = [
+      "base",
+      "+record-upsert",
+      "--base-token",
+      cfg.baseToken,
+      "--table-id",
+      cfg.tableId,
+      "--record-id",
+      recordId,
+    ]
+    const tail = ["--as", "user", "--format", "json"]
+    let used = await runLarkCli(cliPath, [...head, "--json", `@${tmp}`, ...tail])
+    if (!isCliSuccess(used) && /json|@|file|parse|invalid/i.test(cliErrorMessage(used).message)) {
+      used = await runLarkCli(cliPath, [...head, "--json", JSON.stringify(fields), ...tail])
+    }
+    if (!isCliSuccess(used)) {
+      const e = cliErrorMessage(used)
+      return { error: e.message, code: e.code }
+    }
+    const mismatch = sameRowUpdateError(used.json, recordId)
+    if (mismatch) return { error: mismatch, code: "unexpected_create" }
+    return { recordId }
+  })
+}
+
 async function uploadAttachmentsViaCli(
   cliPath: string,
   cfg: LarkCfg,
@@ -493,28 +586,34 @@ async function uploadAttachmentsViaCli(
   files: { name: string; path: string }[],
 ): Promise<{ ok: true } | { error: string; code: string | number }> {
   if (!files.length) return { ok: true }
-  const args = [
-    "base",
-    "+record-upload-attachment",
-    "--base-token",
-    cfg.baseToken,
-    "--table-id",
-    cfg.tableId,
-    "--record-id",
-    recordId,
-    "--field-id",
-    fieldId,
-  ]
-  for (const f of files) {
-    args.push("--file", f.path)
+  try {
+    return await withCliRelativeFiles(files, async (staged) => {
+      const args = [
+        "base",
+        "+record-upload-attachment",
+        "--base-token",
+        cfg.baseToken,
+        "--table-id",
+        cfg.tableId,
+        "--record-id",
+        recordId,
+        "--field-id",
+        fieldId,
+      ]
+      for (const f of staged) {
+        args.push("--file", f.path)
+      }
+      args.push("--as", "user", "--format", "json")
+      const run = await runLarkCli(cliPath, args)
+      if (!isCliSuccess(run)) {
+        const e = cliErrorMessage(run)
+        return { error: e.message, code: e.code }
+      }
+      return { ok: true as const }
+    })
+  } catch (e) {
+    return { error: (e as Error).message, code: "attach_path" }
   }
-  args.push("--as", "user", "--format", "json")
-  const run = await runLarkCli(cliPath, args)
-  if (!isCliSuccess(run)) {
-    const e = cliErrorMessage(run)
-    return { error: e.message, code: e.code }
-  }
-  return { ok: true }
 }
 
 function emptyOptions(): LarkSelectOptions {
@@ -703,6 +802,30 @@ async function uploadMediaApi(
   return { file_token: json.data.file_token, name: fileName }
 }
 
+async function updateRecordApi(
+  token: string,
+  cfg: LarkCfg,
+  recordId: string,
+  fields: Record<string, unknown>,
+): Promise<{ recordId: string } | { error: string; code: number | string }> {
+  const json = await larkFetch(
+    token,
+    `${OPEN}/bitable/v1/apps/${cfg.baseToken}/tables/${cfg.tableId}/records/${recordId}`,
+    {
+      method: "PUT",
+      query: { user_id_type: "open_id" },
+      body: JSON.stringify({ fields }),
+    },
+  )
+  if (json.code !== 0) return { error: json.msg || "update failed", code: json.code }
+  const data = json.data as { record?: { record_id?: string } } | undefined
+  const returned = data?.record?.record_id
+  if (returned && returned !== recordId) {
+    return { error: "更新返回了另一个 record_id，已中止以免改去指向第二行", code: "unexpected_create" }
+  }
+  return { recordId }
+}
+
 async function updateAttachmentApi(
   token: string,
   cfg: LarkCfg,
@@ -874,67 +997,111 @@ async function pushViaCli(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTabl
       mode: "cli",
     }
   }
+  const cliPath = resolved.path
 
   try {
-    await fetchFieldMetaViaCli(resolved.path, cfg)
+    await fetchFieldMetaViaCli(cliPath, cfg)
   } catch (e) {
     const err = e as Error & { code?: string | number }
     steps.push({ step: "auth", ok: false, message: err.message })
     return { ok: false, steps, warnings, error: err.message, code: err.code ?? "meta_failed", mode: "cli" }
   }
 
-  const createFields = buildCreateFields(
-    input.draft,
+  const writeFields = fieldsForCliWrite(
+    buildCreateFields(input.draft, schema, input.companyOption, input.handlerOpenIds, warnings),
     schema,
-    input.companyOption,
-    input.handlerOpenIds,
-    warnings,
   )
+  const existingId = input.feishuRecordId?.trim() || ""
+  const updating = pushActionFor(existingId) === "update"
 
-  const created = await batchCreateViaCli(resolved.path, cfg, createFields)
-  if ("error" in created) {
-    steps.push({ step: "create", ok: false, message: `${created.error} (${created.code})` })
+  let recordId = existingId
+  if (updating) {
+    const updated = await retryIfNotReady(() => upsertViaCli(cliPath, cfg, existingId, writeFields))
+    if ("error" in updated) {
+      steps.push({ step: "update", ok: false, message: `${updated.error} (${updated.code})` })
+      return {
+        ok: false,
+        action: "updated",
+        recordId: existingId,
+        steps,
+        warnings,
+        error: `更新失败：${updated.error}`,
+        code: updated.code,
+        mode: "cli",
+      }
+    }
+    recordId = existingId
+    steps.push({ step: "update", ok: true, message: recordId })
+  } else {
+    const created = await batchCreateViaCli(cliPath, cfg, writeFields)
+    if ("error" in created) {
+      steps.push({ step: "create", ok: false, message: `${created.error} (${created.code})` })
+      return {
+        ok: false,
+        action: "created",
+        steps,
+        warnings,
+        error: `建行失败：${created.error}`,
+        code: created.code,
+        mode: "cli",
+      }
+    }
+    recordId = created.recordId
+    steps.push({ step: "create", ok: true, message: recordId })
+  }
+
+  const files = await resolveScreenshotFiles(input)
+  const pending = files.filter((file) =>
+    screenshotsToUpload(
+      files.map((item) => item.name),
+      input.attachedNames,
+    ).includes(file.name),
+  )
+  if (!pending.length) {
     return {
-      ok: false,
+      ok: true,
+      action: updating ? "updated" : "created",
+      recordId,
+      attachedNames: [],
       steps,
       warnings,
-      error: `建行失败：${created.error}`,
-      code: created.code,
       mode: "cli",
     }
   }
-  steps.push({ step: "create", ok: true, message: created.recordId })
 
-  const files = await resolveScreenshotFiles(input)
-  if (!files.length) {
-    return { ok: true, recordId: created.recordId, steps, warnings, mode: "cli" }
-  }
-
-  const up = await uploadAttachmentsViaCli(
-    resolved.path,
-    cfg,
-    created.recordId,
-    resolveAttachFieldId(schema, warnings),
-    files,
+  const up = await retryIfNotReady(() =>
+    uploadAttachmentsViaCli(cliPath, cfg, recordId, resolveAttachFieldId(schema, warnings), pending),
   )
   if ("error" in up) {
     steps.push({ step: "attach", ok: false, message: `${up.error} (${up.code})` })
     return {
       ok: false,
-      recordId: created.recordId,
+      action: updating ? "updated" : "created",
+      recordId,
+      attachedNames: [],
       steps,
       warnings: [
         ...warnings,
-        "建行已成功但附件上传失败，请到飞书表格手动补附件，或用「复制为飞书行」降级",
+        updating
+          ? "字段已按这一行更新，但新截图没有传上。飞书里原来的附件还在。可再次同步，或到表格里手动补。"
+          : "建行已成功但附件上传失败。行号会写回本地，再次同步会更新这一行而不是再建。",
       ],
       error: `附件上传失败：${up.error}`,
       code: up.code,
       mode: "cli",
     }
   }
-  steps.push({ step: "upload", ok: true, message: `${files.length} 张` })
+  steps.push({ step: "upload", ok: true, message: `${pending.length} 张` })
   steps.push({ step: "attach", ok: true })
-  return { ok: true, recordId: created.recordId, steps, warnings, mode: "cli" }
+  return {
+    ok: true,
+    action: updating ? "updated" : "created",
+    recordId,
+    attachedNames: pending.map((file) => file.name),
+    steps,
+    warnings,
+    mode: "cli",
+  }
 }
 
 async function pushViaApi(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTableSchema): Promise<LarkPushResult> {
@@ -952,64 +1119,111 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTabl
     steps.push({ step: "config", ok: false, message: auth.error })
     return { ok: false, steps, warnings, error: auth.error, code: "missing_credentials", mode: "api" }
   }
+  const token = auth.token
 
   try {
-    await fetchFieldMetaApi(auth.token, cfg)
+    await fetchFieldMetaApi(token, cfg)
   } catch (e) {
     const err = e as Error & { code?: number }
     steps.push({ step: "auth", ok: false, message: err.message })
     return { ok: false, steps, warnings, error: err.message, code: err.code ?? "meta_failed", mode: "api" }
   }
 
-  const createFields = buildCreateFields(
-    input.draft,
+  const writeFields = fieldsForCliWrite(
+    buildCreateFields(input.draft, schema, input.companyOption, input.handlerOpenIds, warnings),
     schema,
-    input.companyOption,
-    input.handlerOpenIds,
-    warnings,
   )
+  const existingId = input.feishuRecordId?.trim() || ""
+  const updating = pushActionFor(existingId) === "update"
 
-  const created = await batchCreateApi(auth.token, cfg, createFields)
-  if ("error" in created) {
-    steps.push({ step: "create", ok: false, message: `${created.error} (${created.code})` })
+  let recordId = existingId
+  if (updating) {
+    const updated = await retryIfNotReady(() => updateRecordApi(token, cfg, existingId, writeFields))
+    if ("error" in updated) {
+      steps.push({ step: "update", ok: false, message: `${updated.error} (${updated.code})` })
+      return {
+        ok: false,
+        action: "updated",
+        recordId: existingId,
+        steps,
+        warnings,
+        error: `更新失败：${updated.error}`,
+        code: updated.code,
+        mode: "api",
+      }
+    }
+    recordId = existingId
+    steps.push({ step: "update", ok: true, message: recordId })
+  } else {
+    const created = await batchCreateApi(token, cfg, writeFields)
+    if ("error" in created) {
+      steps.push({ step: "create", ok: false, message: `${created.error} (${created.code})` })
+      return {
+        ok: false,
+        action: "created",
+        steps,
+        warnings,
+        error: `建行失败：${created.error}`,
+        code: created.code,
+        mode: "api",
+      }
+    }
+    recordId = created.recordId
+    steps.push({ step: "create", ok: true, message: recordId })
+  }
+
+  const disk = await resolveScreenshotFiles(input)
+  const pendingNames = screenshotsToUpload(
+    disk.length ? disk.map((file) => file.name) : (input.screenshots ?? []).map((shot) => shot.name),
+    input.attachedNames,
+  )
+  if (updating) {
+    if (pendingNames.length) {
+      warnings.push(
+        "API 模式这次只更新字段，不改附件列，避免清掉飞书里已有附件。新截图请改回 lark-cli（默认）再同步一次。",
+      )
+    }
     return {
-      ok: false,
+      ok: true,
+      action: "updated",
+      recordId,
+      attachedNames: [],
       steps,
       warnings,
-      error: `建行失败：${created.error}`,
-      code: created.code,
       mode: "api",
     }
   }
-  steps.push({ step: "create", ok: true, message: created.recordId })
 
-  // Prefer disk files; fall back to in-memory buffers for API mode
-  const disk = await resolveScreenshotFiles(input)
   const shots: { name: string; data: Buffer }[] = []
   if (disk.length) {
-    for (const f of disk) {
-      shots.push({ name: f.name, data: await fs.readFile(f.path) })
+    for (const file of disk) {
+      if (!pendingNames.includes(file.name)) continue
+      shots.push({ name: file.name, data: await fs.readFile(file.path) })
     }
   } else {
-    shots.push(...(input.screenshots ?? []))
+    for (const shot of input.screenshots ?? []) {
+      if (pendingNames.includes(shot.name)) shots.push(shot)
+    }
   }
 
   if (!shots.length) {
-    return { ok: true, recordId: created.recordId, steps, warnings, mode: "api" }
+    return { ok: true, action: "created", recordId, attachedNames: [], steps, warnings, mode: "api" }
   }
 
   const tokens: { file_token: string; name: string }[] = []
   for (const shot of shots) {
-    const up = await uploadMediaApi(auth.token, cfg, shot.name, shot.data)
+    const up = await uploadMediaApi(token, cfg, shot.name, shot.data)
     if ("error" in up) {
       steps.push({ step: "upload", ok: false, message: `${shot.name}: ${up.error} (${up.code})` })
       return {
         ok: false,
-        recordId: created.recordId,
+        action: "created",
+        recordId,
+        attachedNames: [],
         steps,
         warnings: [
           ...warnings,
-          "建行已成功但附件上传失败，请到飞书表格手动补附件，或用「复制为飞书行」降级",
+          "建行已成功但附件上传失败。行号会写回本地，再次同步会更新这一行而不是再建。",
         ],
         error: `附件上传失败：${up.error}`,
         code: up.code,
@@ -1021,9 +1235,9 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTabl
   steps.push({ step: "upload", ok: true, message: `${tokens.length} 张` })
 
   const upd = await updateAttachmentApi(
-    auth.token,
+    token,
     cfg,
-    created.recordId,
+    recordId,
     resolveAttachFieldId(schema, warnings),
     tokens,
   )
@@ -1031,7 +1245,9 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTabl
     steps.push({ step: "attach", ok: false, message: `${upd.error} (${upd.code})` })
     return {
       ok: false,
-      recordId: created.recordId,
+      action: "created",
+      recordId,
+      attachedNames: [],
       steps,
       warnings: [...warnings, "建行已成功但附件字段更新失败，请到飞书表格手动补附件"],
       error: `附件更新失败：${upd.error}`,
@@ -1040,19 +1256,39 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTabl
     }
   }
   steps.push({ step: "attach", ok: true })
-  return { ok: true, recordId: created.recordId, steps, warnings, mode: "api" }
+  return {
+    ok: true,
+    action: "created",
+    recordId,
+    attachedNames: shots.map((shot) => shot.name),
+    steps,
+    warnings,
+    mode: "api",
+  }
 }
 
 /**
- * Confirm → local already done by caller → create (no attach) → upload attach.
+ * Local save is already done by the caller.
+ * No feishu_record_id → batch-create, then upload new screenshots.
+ * With feishu_record_id → upsert that row. New screenshot names are appended;
+ * the attachment column is not replaced, so older files stay.
  * Default: lark-cli --as user. Optional: LARK_PUSH_MODE=api + user token.
  * Never rolls back local files. Missing CLI/credentials → clear error, not fake success.
  */
 export async function pushRecordToFeishu(input: LarkPushInput): Promise<LarkPushResult> {
+  const storedId = input.feishuRecordId?.trim() || ""
+  const finish = (result: LarkPushResult): LarkPushResult => {
+    if (!storedId) return { ...result, action: result.action ?? "created" }
+    return {
+      ...result,
+      action: result.action ?? "updated",
+      recordId: result.recordId || storedId,
+    }
+  }
   const cfg = readCfg()
   const missing = missingLarkTarget(cfg)
   if (missing) {
-    return {
+    return finish({
       ok: false,
       steps: [
         { step: "local", ok: true, message: "本地已落盘" },
@@ -1062,14 +1298,14 @@ export async function pushRecordToFeishu(input: LarkPushInput): Promise<LarkPush
       error: missing,
       code: "lark_base_unconfigured",
       mode: cfg.pushMode,
-    }
+    })
   }
   let schema: FeishuTableSchema
   try {
     schema = await readFeishuTableSchema()
   } catch (e) {
     const message = (e as Error).message
-    return {
+    return finish({
       ok: false,
       steps: [
         { step: "local", ok: true, message: "本地已落盘" },
@@ -1079,10 +1315,10 @@ export async function pushRecordToFeishu(input: LarkPushInput): Promise<LarkPush
       error: message,
       code: "feishu_schema",
       mode: cfg.pushMode,
-    }
+    })
   }
-  if (cfg.pushMode === "api") return pushViaApi(input, cfg, schema)
-  return pushViaCli(input, cfg, schema)
+  if (cfg.pushMode === "api") return finish(await pushViaApi(input, cfg, schema))
+  return finish(await pushViaCli(input, cfg, schema))
 }
 
 /** Read saved screenshot files from KB for re-push scenarios */

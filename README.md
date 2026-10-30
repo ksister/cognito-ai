@@ -38,20 +38,24 @@ npm run dev                   # 打开 http://localhost:4317
 5. 多选粘贴分隔符是文件顶部的 `multiSeparator`，默认英文逗号 `,`。测试表如果认顿号或其他符号，只改这一处。
 6. 处理人不在粘贴的 20 列里。cli 写入用 `people.fieldId`（同步字段时按列名「处理人」填上）和 `people.defaultOpenId`（本人的 `ou_…`，只能手填在私有配置里）。
 7. 默认通道是 `lark-cli`（`LARK_PUSH_MODE=cli`）。cli 按 `fieldId` 建行：文本和单选是字符串，多选是字符串数组，日期是毫秒时间戳，处理人是 `[{id}]`。没有 fieldId 的列会跳过并警告。复制为飞书行只是失败时的兜底。
+8. 同一条本地记录对应飞书同一行。建行成功后，frontmatter 写入 `feishu_record_id`、`feishu_synced_at`，并保持 `feishu_synced: true`。记录页或编辑页点「同步飞书」：有行号就用 `lark-cli base +record-upsert --record-id` 改这一行，不会再建一行；没有行号才新建，成功后再把行号写回来。字段写法与建行相同。
+9. 再次同步时，附件只追加还没传过的截图（文件名记在 `feishu_attached`），不清空飞书里已有附件。`--file` 用工作目录下的相对路径；文件在仓库外时先复制到 `workbench/.tmp/` 再传。若更新马上返回 `800030405 not_found`，会等 1.5 秒再试一次。
+10. `node scripts/lark-t4-probe.mjs` 仍是测试表上的调试脚本，不参与日常保存。日常以工作台「同步飞书」为准。
 
 ### 验收
 **主验收：cli 把 20 列都写对**
 1. 检出本分支，`cd workbench && npm install`。`.env.local` 使用默认 `LARK_PUSH_MODE=cli`，并填写测试表的 `LARK_BASE_TOKEN`、`LARK_TABLE_ID`。`lark-cli` 已用个人身份登录。
 2. 把 `workbench/config/feishu-table.example.json` 复制到 `KB_DIR/config/feishu-table.json`（没设 `KB_DIR` 就是仓库根的 `config/feishu-table.json`，已被 gitignore）。
 3. `npm run dev`，打开记一笔，点「从飞书同步字段」，核对选项和 fieldId 的差异后再确认写入。在同一文件填 `people.defaultOpenId` 为自己的 `ou_…`。飞书里仍叫「字段1 / 字段2 / 字段3」的列对不上「本地记录ID」「需求线索」：确认哪一列是哪一个之后，在私有配置里给该列加 `feishuName`（例如 `"feishuName": "字段2"`），再同步一次。不要猜，也不要提交这个文件。
-4. 保存一条测试记录。到测试表核对这一行：20 列都在对应列上，多选是多个选项，处理人是本人。
+4. 保存一条测试记录。到测试表核对这一行：20 列都在对应列上，多选是多个选项，处理人是本人。打开本地 md，frontmatter 里应有 `feishu_record_id`。
+5. 改这条记录的处理状态，再点「同步飞书」。飞书里仍是刚才那一行（同一个 record_id），状态已变，没有第二行。提示语会写明「已更新同一飞书行」。再点一次同步，还是这一行。
 
 **次验收：剪贴板兜底**
 点「复制为飞书行」。点击当下会把接口 Promise 交给 `ClipboardItem`。粘到「工作台粘贴」视图只作对照。浏览器不支持时，页面给出已全选的文本，按 Ctrl 或 Cmd + C。多选分隔符默认英文逗号，不对就改 `multiSeparator`。
 
 等真机 cli 验收和「通过，可合并」之后再合并。不要 squash，不要自行合入。
 
-新增且可选的 frontmatter 键：`site`、`support_type`、`resolution`、`fixed_version`、`dimensions`、`inspection_types`、`industries`、`case_visibility`、`docs`，以及自动生成的 `local_id`（`AE-YYYYMMDD-NN`）。旧记录没有这些键也能打开。`channel`、`module` 仍留在本地，不导出；`category` 不再出现在表单里，旧值保留。
+新增且可选的 frontmatter 键：`site`、`support_type`、`resolution`、`fixed_version`、`dimensions`、`inspection_types`、`industries`、`case_visibility`、`docs`，自动生成的 `local_id`（`AE-YYYYMMDD-NN`），以及同步成功后的 `feishu_record_id`、`feishu_synced_at`、`feishu_attached`。旧记录没有这些键也能打开。`channel`、`module` 仍留在本地，不导出；`category` 不再出现在表单里，旧值保留。
 
 ## 真实数据放在哪
 

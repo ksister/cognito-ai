@@ -53,6 +53,9 @@ function draft(patch: Partial<RecordDraft> = {}): SupportRecord {
     id: "示例-星河电子/2026-10-15-demo",
     file: "2026-10-15-demo.md",
     feishuSynced: false,
+    feishuRecordId: "",
+    feishuSyncedAt: "",
+    feishuAttached: [],
     created: "2026-10-15T00:00:00.000Z",
     updated: "2026-10-15T00:00:00.000Z",
   }
