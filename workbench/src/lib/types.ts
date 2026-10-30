@@ -14,7 +14,7 @@ export const NEED_TYPES = ["软件改进", "辅助工具", "文档/教程", "其
 export const CUSTOMER_STAGES = ["售前", "POC/打样", "交付中", "量产维护", "已流失"] as const
 
 export type Channel = (typeof CHANNELS)[number]
-export type Status = (typeof STATUSES)[number]
+export type Status = string  // widened: Feishu 处理状态 options may differ from STATUSES
 export type NeedType = (typeof NEED_TYPES)[number]
 
 export type Need = {
@@ -32,7 +32,7 @@ export type RecordDraft = {
   product: string
   module: string
   category: string
-  status: Status
+  status: string
   problem: string
   process: string
   solution: string
@@ -69,6 +69,21 @@ export type CustomerSummary = CustomerProfile & {
 }
 
 export type ExtractErrorCode = "timeout" | "auth" | "rate_limit" | "unsafe" | "parse_error" | "partial"
+
+export type FeishuPushStepResult = {
+  step: string
+  ok: boolean
+  message?: string
+}
+
+export type FeishuPushResult = {
+  ok: boolean
+  recordId?: string
+  steps: FeishuPushStepResult[]
+  warnings: string[]
+  error?: string
+  code?: string | number
+}
 
 export type ExtractResult = {
   mode: "ai" | "rules"

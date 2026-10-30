@@ -43,3 +43,6 @@ next-env.d.ts
 # local dev logs
 *.log
 dev-*.log
+
+_e2e_shots/
+

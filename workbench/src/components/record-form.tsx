@@ -31,10 +31,12 @@ import {
   emptyDraft,
   type ExtractErrorCode,
   type ExtractResult,
+  type FeishuPushResult,
   type Need,
   type RecordDraft,
   type SupportRecord,
 } from "@/lib/types"
+import { toTsvRows } from "@/lib/feishu"
 
 const MAX_SHOTS = 9
 
@@ -91,6 +93,22 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const [showPaste, setShowPaste] = useState(false)
   const [lastSource, setLastSource] = useState<"screenshot" | "paste" | undefined>()
   const [vlError, setVlError] = useState<string>()
+  const [handlerOpenIds, setHandlerOpenIds] = useState<string[]>([])
+  const [companyOption, setCompanyOption] = useState("")
+  const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "upload" | "attach" | "done">("idle")
+  const [feishuMeta, setFeishuMeta] = useState<{
+    configured: boolean
+    error?: string
+    options: {
+      company: string[]
+      status: string[]
+      product: string[]
+      resolveMethod: string[]
+      supportType: string[]
+      site: string[]
+    }
+    handlers: { name: string; open_id: string }[]
+  } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const dragRef = useRef(false)
   const shotsRef = useRef(shots)
@@ -102,6 +120,35 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved) setMe(saved)
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch("/api/feishu/meta")
+        const data = await res.json()
+        if (!cancelled) setFeishuMeta(data)
+      } catch {
+        if (!cancelled)
+          setFeishuMeta({
+            configured: false,
+            error: "无法加载飞书字段元数据",
+            options: { company: [], status: [], product: [], resolveMethod: [], supportType: [], site: [] },
+            handlers: [],
+          })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // When customer text matches a Feishu company option, preselect it
+  useEffect(() => {
+    if (!feishuMeta?.options.company.length || !d.customer.trim()) return
+    const hit = feishuMeta.options.company.find((c) => c === d.customer.trim())
+    if (hit) setCompanyOption(hit)
+  }, [d.customer, feishuMeta])
 
   useEffect(() => {
     return () => {
@@ -289,8 +336,14 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       return
     }
     setSaving(true)
+    setSavePhase("local")
     try {
       const bodyDraft = { ...d, title: d.title.trim() || d.problem.trim().slice(0, 24) }
+      const feishuSide = {
+        companyOption: companyOption || undefined,
+        handlerOpenIds,
+        push: !editing,
+      }
       let res: Response
       if (initial) {
         res = await fetch(
@@ -300,25 +353,62 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       } else if (shots.length > 0) {
         const form = new FormData()
         form.append("draft", JSON.stringify(bodyDraft))
+        form.append("feishu", JSON.stringify(feishuSide))
         for (const s of shots) form.append("screenshots", s.file, s.file.name)
         res = await fetch("/api/records", { method: "POST", body: form })
       } else {
         res = await fetch("/api/records", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(bodyDraft),
+          body: JSON.stringify({ ...bodyDraft, feishu: feishuSide }),
         })
       }
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error)
-      toast.success("已保存到知识库")
+      const data = (await res.json()) as SupportRecord & {
+        error?: string
+        screenshots?: string[]
+        feishu?: FeishuPushResult
+      }
+      if (!res.ok) throw new Error(data.error || "保存失败")
+
+      const fr = data.feishu
+      if (fr) {
+        for (const st of fr.steps) {
+          if (st.step === "create") setSavePhase("create")
+          if (st.step === "upload") setSavePhase("upload")
+          if (st.step === "attach") setSavePhase("attach")
+        }
+        setSavePhase("done")
+        if (fr.warnings?.length) {
+          for (const w of fr.warnings) toast.message(w)
+        }
+        if (fr.ok) {
+          toast.success(fr.recordId ? `已保存，飞书行 ${fr.recordId}` : "已保存并写入飞书")
+        } else {
+          const stepFail = fr.steps.filter((x) => !x.ok).map((x) => x.step).join(",")
+          toast.error(`本地已保存；飞书未完成（${stepFail || "未知"}）：${fr.error || "失败"}。可用「复制为飞书行」降级`)
+          try {
+            await navigator.clipboard.writeText(toTsvRows([data as SupportRecord]))
+            toast.message("已把本行复制到剪贴板，可粘贴到飞书表格")
+          } catch {
+            /* ignore */
+          }
+        }
+      } else {
+        toast.success("已保存到知识库")
+      }
       router.push(recordHref(data))
       router.refresh()
     } catch (e) {
       toast.error(`保存失败：${(e as Error).message}`)
       setSaving(false)
+      setSavePhase("idle")
     }
   }
+
+  const statusOptions =
+    feishuMeta?.options.status?.length ? feishuMeta.options.status : [...STATUSES]
+  const companyOptions = feishuMeta?.options.company ?? []
+  const handlers = feishuMeta?.handlers ?? []
 
   const canSave = editing || confirmed || (!shots.length && !extracted)
   const saveBlockedReason =
@@ -554,9 +644,9 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                   ))}
                 </select>
               </Field>
-              <Field label="状态">
-                <select className={selectClass} value={d.status} onChange={(e) => { set("status", e.target.value as RecordDraft["status"]); setConfirmed(false) }}>
-                  {STATUSES.map((c) => (
+              <Field label="处理状态（飞书）">
+                <select className={selectClass} value={d.status} onChange={(e) => { set("status", e.target.value); setConfirmed(false) }}>
+                  {[...new Set([...statusOptions, d.status].filter(Boolean))].map((c) => (
                     <option key={c}>{c}</option>
                   ))}
                 </select>
@@ -575,6 +665,64 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 </select>
               </Field>
             </div>
+            {!editing && (
+              <div className="space-y-3 rounded-lg border border-dashed border-sky-300 bg-sky-50/50 p-3">
+                <p className="text-sm font-medium text-sky-950">飞书直写（确认保存后）</p>
+                <p className="text-xs text-sky-900/80">
+                  {feishuMeta == null
+                    ? "正在加载飞书字段…"
+                    : feishuMeta.configured
+                      ? "已接好用户凭证；未命中的 select 会跳过或写入「其他-待确认」。"
+                      : `飞书未配置或鉴权失败：${feishuMeta.error || "缺少 LARK_USER_ACCESS_TOKEN"}。本地仍可保存，可用行复制降级。`}
+                </p>
+                <Field label="客户公司（飞书 select）">
+                  <select
+                    className={selectClass}
+                    value={companyOption}
+                    onChange={(e) => {
+                      setCompanyOption(e.target.value)
+                      setConfirmed(false)
+                    }}
+                  >
+                    <option value="">（按客户名自动匹配；未命中→其他-待确认）</option>
+                    {companyOptions.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                {handlers.length > 0 && (
+                  <Field label="处理人（open_id 多选）">
+                    <div className="flex flex-wrap gap-2">
+                      {handlers.map((h) => {
+                        const on = handlerOpenIds.includes(h.open_id)
+                        return (
+                          <label key={h.open_id} className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              onChange={() => {
+                                setHandlerOpenIds((prev) =>
+                                  on ? prev.filter((id) => id !== h.open_id) : [...prev, h.open_id],
+                                )
+                                setConfirmed(false)
+                              }}
+                            />
+                            {h.name || h.open_id}
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </Field>
+                )}
+                {handlers.length === 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    未配置 LARK_HANDLERS 时不写处理人字段。格式见 .env.example。
+                  </p>
+                )}
+              </div>
+            )}
             <Field label="问题描述">
               <Textarea value={d.problem} onChange={(e) => { set("problem", e.target.value); setConfirmed(false) }} className="min-h-20" />
             </Field>
@@ -666,10 +814,25 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
             保存为 Markdown：customers/{d.customer || "<客户>"}/records/
             {shots.length > 0 ? ` + files/截图-日期-1..${shots.length}.jpg` : ""}
             {saveBlockedReason ? ` · ${saveBlockedReason}` : ""}
+            {saving && !editing
+              ? ` · 进度：${
+                  savePhase === "local"
+                    ? "本地"
+                    : savePhase === "create"
+                      ? "本地→建行"
+                      : savePhase === "upload"
+                        ? "本地→建行→上传"
+                        : savePhase === "attach"
+                          ? "本地→建行→附件"
+                          : savePhase === "done"
+                            ? "完成"
+                            : "…"
+                }`
+              : ""}
           </span>
           <Button onClick={save} disabled={saving || !canSave}>
             {saving ? <Loader2 className="animate-spin" /> : <Save />}
-            {editing ? "保存修改" : "保存记录"}
+            {editing ? "保存修改" : "确认保存并写飞书"}
           </Button>
         </div>
       </div>
