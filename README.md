@@ -10,7 +10,7 @@
    - 每个客户一条**从头到尾的时间线**，加客户档案和资料附件
    - 所有记录里的痛点自动汇总进**需求池**，按影响客户数排序，一键生成需求分析文档
 
-工作台读写的就是本目录下的 Markdown 文件（`customers/`、`requirements/`），用 Obsidian 或 AI 也能直接看、直接改。
+工作台读写知识库里的 `customers/`、`requirements/`。真实数据不进本仓库，用 `KB_DIR` 指到仓库外的私有目录（见「真实数据放在哪」）。
 
 ## 运行工作台
 需要 Node.js 20+。
@@ -31,6 +31,20 @@ npm run dev                   # 打开 http://localhost:4317
 「复制为飞书行」按以下列顺序输出（Tab 分隔，粘贴到表格即可自动分列）：
 日期、客户、联系人、渠道、产品/版本、模块、问题分类、问题描述、解决方案、状态、需求线索。
 如果你的飞书表格列不同，修改 `workbench/src/lib/feishu.ts` 里的 `FEISHU_COLUMNS`。
+
+## 真实数据放在哪
+
+真实客户记录、需求文档和日记放在仓库外的私有目录，不要提交进这个仓库。仓库里只留代码，以及 `customers/示例-*`、`02-projects/_example-project/` 这类虚构示例。
+
+1. 在仓库外建一个私有目录，例如 `~/ae-kb`。
+2. 第一次使用时，把本仓库的 `01-me/`、`templates/`、`prompts/` 复制到那个目录。
+3. 在 `workbench/.env.local` 里指向它（复制 `workbench/.env.example` 后填写）：
+
+```bash
+KB_DIR=/绝对路径/到/私有知识库
+```
+
+工作台此后读写该目录下的 `customers/`、`requirements/`。不设 `KB_DIR` 时，默认用 `workbench/` 的上一级目录，也就是本仓库；日常使用请改到仓库外。
 
 ## 目录结构
 ```
@@ -64,4 +78,4 @@ workbench/              技术支持工作台（Next.js）
 |---|---|
 | 浏览/编辑知识库 | Obsidian（把本目录作为 vault 打开） |
 | AI 助手 | Claude Code、Cursor、Codex CLI |
-| 备份 | git 私有仓库 |
+| 备份 | 代码和示例随本仓库；真实知识库目录单独备份 |

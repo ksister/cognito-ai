@@ -1,0 +1,16 @@
+# 真实客户资料、需求、日志、收件箱不进仓库（D9）。
+# 仍跟踪：customers/示例-*/、下面四个目录里的 .gitkeep、02-projects/_example-project/
+
+/customers/*
+!/customers/.gitkeep
+!/customers/示例-*/
+!/customers/示例-*/**
+
+/requirements/*
+!/requirements/.gitkeep
+
+/journal/*
+!/journal/.gitkeep
+
+/00-inbox/*
+!/00-inbox/.gitkeep
