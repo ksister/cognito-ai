@@ -6,7 +6,6 @@ import {
   CHANNELS,
   NEED_TYPES,
   OPEN_STATUSES,
-  STATUSES,
   localDate,
   type Channel,
   type CustomerProfile,
@@ -14,7 +13,6 @@ import {
   type Need,
   type NeedType,
   type RecordDraft,
-  type Status,
   type SupportRecord,
 } from "./types"
 
