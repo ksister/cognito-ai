@@ -23,6 +23,8 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { recordHref, selectClass } from "@/components/bits"
 import { compressImageFile } from "@/lib/client-image"
+import { CopyFallback } from "@/components/copy-fallback"
+import { CopyTextError, copyText } from "@/lib/copy-text"
 import { feishuClipboard } from "@/lib/feishu"
 import {
   checkResolutionStatus,
@@ -122,6 +124,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const [vlError, setVlError] = useState<string>()
   const [handlerOpenIds, setHandlerOpenIds] = useState<string[]>([])
   const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "upload" | "attach" | "done">("idle")
+  const [copyFallback, setCopyFallback] = useState<string | null>(null)
   const [feishuMeta, setFeishuMeta] = useState<{
     configured: boolean
     error?: string
@@ -430,17 +433,23 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         } else {
           const stepFail = fr.steps.filter((x) => !x.ok).map((x) => x.step).join(",")
           toast.error(`本地已保存；飞书未完成（${stepFail || "未知"}）：${fr.error || "失败"}。可用「复制为飞书行」降级`)
-          try {
-            if (!schemaState.ok) {
-              toast.message(schemaState.error)
+          if (!schemaState.ok) {
+            toast.error(`没有复制到剪贴板：表结构配置不可用。${schemaState.error}`)
+          } else {
+            const clip = feishuClipboard([data as SupportRecord], schemaState.schema)
+            if (!clip.text) {
+              toast.error("没有复制到剪贴板：生成的行是空的")
             } else {
-              const clip = feishuClipboard([data as SupportRecord], schemaState.schema)
-              await navigator.clipboard.writeText(clip.text)
-              for (const w of clip.warnings) toast.message(w)
-              toast.message("已把本行复制到剪贴板，可粘贴到飞书表格")
+              try {
+                await copyText(clip.text)
+                for (const w of clip.warnings) toast.message(w)
+                toast.message("已把本行复制到剪贴板，可粘贴到飞书表格")
+              } catch (e) {
+                const err = e instanceof CopyTextError ? e : new CopyTextError((e as Error).message, clip.text)
+                setCopyFallback(err.text || clip.text)
+                toast.error(`没有复制到剪贴板。${err.message}`)
+              }
             }
-          } catch {
-            /* ignore */
           }
         }
       } else {
@@ -469,6 +478,11 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
 
   return (
     <div className="grid gap-6 pb-24 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+      {copyFallback && (
+        <div className="lg:col-span-2">
+          <CopyFallback text={copyFallback} />
+        </div>
+      )}
       <Card className="h-fit lg:sticky lg:top-8">
         <CardHeader>
           <CardTitle>① 上传聊天截图</CardTitle>
