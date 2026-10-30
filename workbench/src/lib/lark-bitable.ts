@@ -91,6 +91,11 @@ const WORKBUDDY_CLI_FALLBACK = path.join(
   process.platform === "win32" ? "lark-cli.exe" : "lark-cli",
 )
 
+function missingLarkTarget(cfg: LarkCfg): string | null {
+  if (cfg.baseToken && cfg.tableId) return null
+  return "未配置 LARK_BASE_TOKEN 或 LARK_TABLE_ID。请写入 .env.local（.env.example 只有占位符）。本地记录已保留，可用「复制为飞书行」降级。"
+}
+
 function readCfg(): LarkCfg {
   const modeRaw = (process.env.LARK_PUSH_MODE ?? "cli").trim().toLowerCase()
   return {
@@ -98,8 +103,8 @@ function readCfg(): LarkCfg {
     appSecret: process.env.LARK_APP_SECRET?.trim() || undefined,
     userAccessToken: process.env.LARK_USER_ACCESS_TOKEN?.trim() || undefined,
     refreshToken: process.env.LARK_REFRESH_TOKEN?.trim() || undefined,
-    baseToken: process.env.LARK_BASE_TOKEN?.trim() || "TIlebbivOaXu73s05YXchV1XnPb",
-    tableId: process.env.LARK_TABLE_ID?.trim() || "tbltWWJaNx6bknQV",
+    baseToken: process.env.LARK_BASE_TOKEN?.trim() ?? "",
+    tableId: process.env.LARK_TABLE_ID?.trim() ?? "",
     pushMode: modeRaw === "api" ? "api" : "cli",
     cliPath: process.env.LARK_CLI_PATH?.trim() || undefined,
   }
@@ -776,6 +781,19 @@ export async function getLarkMeta(): Promise<{
   const cfg = readCfg()
   const handlers = parseHandlersEnv()
   const empty = emptyOptions()
+  const missing = missingLarkTarget(cfg)
+  if (missing) {
+    return {
+      configured: false,
+      error: missing,
+      code: "lark_base_unconfigured",
+      options: empty,
+      handlers,
+      baseToken: cfg.baseToken,
+      tableId: cfg.tableId,
+      mode: cfg.pushMode,
+    }
+  }
 
   if (cfg.pushMode === "cli") {
     const resolved = await resolveLarkCli()
@@ -1047,6 +1065,20 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
  */
 export async function pushRecordToFeishu(input: LarkPushInput): Promise<LarkPushResult> {
   const cfg = readCfg()
+  const missing = missingLarkTarget(cfg)
+  if (missing) {
+    return {
+      ok: false,
+      steps: [
+        { step: "local", ok: true, message: "本地已落盘" },
+        { step: "config", ok: false, message: missing },
+      ],
+      warnings: [],
+      error: missing,
+      code: "lark_base_unconfigured",
+      mode: cfg.pushMode,
+    }
+  }
   if (cfg.pushMode === "api") return pushViaApi(input, cfg)
   return pushViaCli(input, cfg)
 }

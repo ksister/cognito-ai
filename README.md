@@ -24,6 +24,7 @@ npm run dev                   # 打开 http://localhost:4317
 
 - **不配置 AI 也能用**：会用规则做初步提取（区分我方/客户、抓问题和结论、识别"能不能/太麻烦"等需求线索）。
 - **配置 AI**：支持任何 OpenAI 兼容接口，`.env.example` 里有 DeepSeek、通义千问、OpenAI 的写法。
+- **飞书直写**：在 `.env.local` 填写 `LARK_BASE_TOKEN` 和 `LARK_TABLE_ID`。`.env.example` 只有占位符，仓库不内置默认表格。
 - ⚠️ 聊天记录会发送给你配置的模型服务商。涉及客户机密时，先确认公司规定，或使用公司内部部署的模型（同样填 `AI_BASE_URL` 即可）。
 
 ### 飞书表格列对齐
