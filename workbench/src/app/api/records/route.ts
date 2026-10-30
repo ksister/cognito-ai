@@ -31,7 +31,7 @@ export async function POST(req: Request) {
   const ctype = req.headers.get("content-type") ?? ""
   try {
     let draft: RecordDraft
-    let screenshotBufs: Buffer[] = []
+    const screenshotBufs: Buffer[] = []
     let side: FeishuSide = {}
 
     if (ctype.includes("multipart/form-data")) {

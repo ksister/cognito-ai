@@ -653,7 +653,8 @@ async function larkFetch(
   if (init.query) {
     for (const [k, v] of Object.entries(init.query)) u.searchParams.set(k, v)
   }
-  const { query: _q, ...rest } = init
+  const { query, ...rest } = init
+  void query
   const res = await fetch(u, {
     ...rest,
     headers: {

@@ -116,7 +116,10 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const transcriptBaseline = useRef<string | null>(null)
   const dragRef = useRef(false)
   const shotsRef = useRef(shots)
-  shotsRef.current = shots
+
+  useEffect(() => {
+    shotsRef.current = shots
+  }, [shots])
 
   useEffect(() => {
     const saved = localStorage.getItem("ae.me")
@@ -147,12 +150,14 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     }
   }, [])
 
-  // When customer text matches a Feishu company option, preselect it
-  useEffect(() => {
-    if (!feishuMeta?.options.company.length || !d.customer.trim()) return
-    const hit = feishuMeta.options.company.find((c) => c === d.customer.trim())
+  const companyList = feishuMeta?.options.company
+  const companyKey = `${d.customer}\0${(companyList ?? []).join("\0")}`
+  const [seenCompanyKey, setSeenCompanyKey] = useState(companyKey)
+  if (seenCompanyKey !== companyKey) {
+    setSeenCompanyKey(companyKey)
+    const hit = companyList?.find((c) => c === d.customer.trim())
     if (hit) setCompanyOption(hit)
-  }, [d.customer, feishuMeta])
+  }
 
   useEffect(() => {
     return () => {
