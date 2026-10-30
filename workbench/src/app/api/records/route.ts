@@ -1,4 +1,5 @@
-import { createRecord, listRecords, saveScreenshotBatch, updateRecord } from "@/lib/kb"
+import path from "node:path"
+import { createRecord, listRecords, saveScreenshotBatch, updateRecord, KB_ROOT, safeName } from "@/lib/kb"
 import { pushRecordToFeishu, type LarkPushResult } from "@/lib/lark-bitable"
 import { compressImageBuffer } from "@/lib/vl"
 import type { RecordDraft } from "@/lib/types"
@@ -68,11 +69,19 @@ export async function POST(req: Request) {
     const wantPush = side.push !== false
     let feishu: LarkPushResult | undefined
     if (wantPush) {
-      // 2–4) create → upload → update attachment (server-side order)
+      const customerSafe = safeName(rec.customer)
+      const filesDir = path.join(KB_ROOT, "customers", customerSafe, "files")
+      const screenshotFiles = screenshots.map((name) => ({
+        name,
+        path: path.join(filesDir, name),
+      }))
+      // 2–3) create (no attach) → upload-attachment via lark-cli (default) or API fallback
       feishu = await pushRecordToFeishu({
         draft: { ...draft, customer: rec.customer, title: rec.title },
         companyOption: side.companyOption,
         handlerOpenIds: side.handlerOpenIds,
+        screenshotFiles,
+        // API mode may still use buffers if paths missing
         screenshots: screenshots.map((name, i) => ({
           name,
           data: screenshotBufs[i],

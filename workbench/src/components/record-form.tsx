@@ -108,6 +108,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       site: string[]
     }
     handlers: { name: string; open_id: string }[]
+    mode?: "cli" | "api"
   } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const dragRef = useRef(false)
@@ -672,8 +673,8 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                   {feishuMeta == null
                     ? "正在加载飞书字段…"
                     : feishuMeta.configured
-                      ? "已接好用户凭证；未命中的 select 会跳过或写入「其他-待确认」。"
-                      : `飞书未配置或鉴权失败：${feishuMeta.error || "缺少 LARK_USER_ACCESS_TOKEN"}。本地仍可保存，可用行复制降级。`}
+                      ? `默认走本机 lark-cli（${feishuMeta.mode || "cli"}）；未命中的 select 会跳过或写入「其他-待确认」。`
+                      : `飞书未就绪：${feishuMeta.error || "请安装并登录 lark-cli（config init）"}。本地仍可保存，可用行复制降级。`}
                 </p>
                 <Field label="客户公司（飞书 select）">
                   <select
