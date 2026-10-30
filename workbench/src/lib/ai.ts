@@ -1,8 +1,7 @@
 import "server-only"
+import { buildExtractSystem, constrainDraftSelects, FeishuSchemaError, normalizeExtractedDraft } from "./feishu-schema"
+import { loadFeishuSchemaState } from "./feishu-schema-load"
 import {
-  CATEGORIES,
-  CHANNELS,
-  NEED_TYPES,
   localDate,
   type ExtractResult,
   type Need,
@@ -45,39 +44,17 @@ async function chatJson<T>(system: string, user: string): Promise<T> {
   return JSON.parse(match[0]) as T
 }
 
-const EXTRACT_SYSTEM = `你是一名机器视觉公司的 AE（应用工程师）助理。用户会给你一段与客户的技术支持聊天记录（来自微信或飞书），你要把它整理成结构化的技术支持记录。
-
-严格要求：
-1. 只根据聊天原文整理，不要补充原文没有的事实。推测的内容必须放进 uncertain。
-2. 凡是你不确定的地方（客户名、型号、版本、问题是否真正解决、因果关系、指代不清的"它/这个"等），都写进 uncertain，每条写清楚"哪里不确定 + 原文依据"。
-3. needs 用来沉淀产品需求线索：从客户的抱怨、反复出现的操作、绕路的做法、"能不能/希望/太麻烦"等表达中提炼痛点，并给出可能的软件改进或辅助工具想法。没有就返回空数组。
-4. 使用简体中文，简洁、具体，保留关键参数（型号、版本号、报错信息、数值）。
-
-输出 JSON，字段如下：
-{
-  "title": "一句话标题，20字内",
-  "date": "YYYY-MM-DD，聊天中最早的日期，找不到就留空",
-  "contact": "客户方联系人",
-  "channel": "${CHANNELS.join("|")}",
-  "product": "涉及的软件/产品及版本",
-  "module": "涉及的功能模块，如 标定/定位/测量/缺陷检测/OCR/读码/通讯/相机采集",
-  "category": "${CATEGORIES.join("|")}",
-  "status": "待处理|跟进中|已解决|已关闭",
-  "problem": "客户遇到的问题，含现象、环境、报错",
-  "process": "排查与沟通过程，用 1. 2. 3. 分步",
-  "solution": "最终解决方案或当前结论；未解决就写明卡在哪里",
-  "needs": [{"pain": "用户痛点", "idea": "改进或工具想法", "type": "${NEED_TYPES.join("|")}"}],
-  "uncertain": ["需要人工确认的点"]
-}`
-
 export async function extractRecord(
   chat: string,
   opts: { customer?: string; me?: string; profile?: string },
 ): Promise<ExtractResult> {
+  const schemaState = await loadFeishuSchemaState()
+  if (!schemaState.ok) throw new FeishuSchemaError(schemaState.error)
+  const schema = schemaState.schema
   if (!API_KEY) {
     return {
       mode: "rules",
-      draft: rulesExtract(chat, opts.me),
+      draft: constrainDraftSelects(rulesExtract(chat, opts.me), schema),
       warning: "未配置 AI_API_KEY，已用规则做初步提取，请重点核对问题描述和解决方案。",
       source: "paste",
     }
@@ -91,28 +68,17 @@ export async function extractRecord(
     ]
       .filter(Boolean)
       .join("\n\n")
-    const draft = await chatJson<Partial<RecordDraft>>(EXTRACT_SYSTEM, user)
-    return { mode: "ai", draft: normalizeDraft(draft), source: "paste" }
+    const draft = await chatJson<Record<string, unknown>>(buildExtractSystem(schema, "paste"), user)
+    return { mode: "ai", draft: normalizeExtractedDraft(draft, schema), source: "paste" }
   } catch (e) {
+    if (e instanceof FeishuSchemaError) throw e
     return {
       mode: "rules",
-      draft: rulesExtract(chat, opts.me),
+      draft: constrainDraftSelects(rulesExtract(chat, opts.me), schema),
       warning: `AI 调用失败（${(e as Error).message}），已改用规则提取。`,
       source: "paste",
     }
   }
-}
-
-function normalizeDraft(d: Partial<RecordDraft>): Partial<RecordDraft> {
-  const out: Partial<RecordDraft> = { ...d }
-  if (!Array.isArray(d.needs)) out.needs = []
-  if (!Array.isArray(d.uncertain)) out.uncertain = []
-  if (d.date && !/^\d{4}-\d{2}-\d{2}$/.test(d.date)) delete out.date
-  if (!d.date) delete out.date
-  for (const k of ["title", "contact", "product", "module", "problem", "process", "solution"] as const) {
-    if (typeof out[k] !== "string") out[k] = out[k] ? String(out[k]) : ""
-  }
-  return out
 }
 
 type Msg = { who: string; text: string; date?: string }

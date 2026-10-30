@@ -1,4 +1,5 @@
 import { extractRecord } from "@/lib/ai"
+import { FeishuSchemaError } from "@/lib/feishu-schema"
 import { readProfileContext } from "@/lib/kb"
 import { extractFromScreenshots, MAX_SCREENSHOTS, VlExtractError } from "@/lib/vl"
 import type { ExtractErrorCode } from "@/lib/types"
@@ -51,10 +52,15 @@ export async function POST(req: Request) {
     return err("parse_error", "截图请使用 multipart 上传（字段名 images）")
   }
   if (!body.chat?.trim()) return Response.json({ error: "聊天记录为空" }, { status: 400 })
-  const result = await extractRecord(body.chat, {
-    customer: body.customer,
-    me: body.me,
-    profile,
-  })
-  return Response.json({ ...result, source: result.source ?? "paste" })
+  try {
+    const result = await extractRecord(body.chat, {
+      customer: body.customer,
+      me: body.me,
+      profile,
+    })
+    return Response.json({ ...result, source: result.source ?? "paste" })
+  } catch (e) {
+    if (e instanceof FeishuSchemaError) return err("parse_error", e.message)
+    return err("parse_error", `文字提取失败：${(e as Error).message}`)
+  }
 }

@@ -1,13 +1,8 @@
 ﻿import "server-only"
-import {
-  CATEGORIES,
-  CHANNELS,
-  NEED_TYPES,
-  type ExtractErrorCode,
-  type ExtractResult,
-  type RecordDraft,
-} from "./types"
+import { buildExtractSystem, normalizeExtractedDraft, type FeishuTableSchema } from "./feishu-schema"
+import { loadFeishuSchemaState } from "./feishu-schema-load"
 import { VL_TRANSCRIPT_RULE, VL_TRANSCRIPT_SCHEMA, applyTranscript, parseTranscript } from "./transcript"
+import { type ExtractErrorCode, type ExtractResult } from "./types"
 
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY
 const DASHSCOPE_BASE_URL = (
@@ -82,33 +77,9 @@ export function vlTransportError(e: unknown, timeoutMs = resolveVlTimeoutMs()): 
   return new VlExtractError("parse_error", `通义 VL 网络错误：${err?.message || "未知"}。可改用粘贴文字。`)
 }
 
-export const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程师）助理。用户会按时间顺序上传多张微信或飞书的技术支持聊天截图，你要合并为同一会话，整理成结构化的技术支持记录。
-
-严格要求：
-1. 只根据截图中可见的文字与界面信息整理，不要编造原文没有的事实。看不清或不确定的字段填 null，并写入 uncertain。
-2. 多张截图按上传顺序拼接为同一段对话，不要当成多条独立记录。
-3. 凡是不确定的地方（客户名、型号、版本、是否真正解决、因果关系、指代不清等），都写进 uncertain，每条写清楚「哪里不确定 + 截图依据」。
-4. needs 用来沉淀产品需求线索：从抱怨、绕路做法、「能不能/希望/太麻烦」等表达中提炼。没有就返回空数组。
-5. 使用简体中文，简洁具体，保留关键参数。只输出 JSON，不要 Markdown 围栏或其他说明。
-6. ${VL_TRANSCRIPT_RULE}
-
-输出 JSON，字段如下：
-{
-  "title": "一句话标题，20字内",
-  "date": "YYYY-MM-DD，聊天中最早的日期，找不到就 null",
-  "contact": "客户方联系人，未知 null",
-  "channel": "${CHANNELS.join("|")}",
-  "product": "涉及的软件/产品及版本，未知 null",
-  "module": "涉及的功能模块，未知 null",
-  "category": "${CATEGORIES.join("|")}",
-  "status": "待处理|跟进中|已解决|已关闭",
-  "problem": "客户遇到的问题",
-  "process": "排查与沟通过程，用 1. 2. 3. 分步",
-  "solution": "最终解决方案或当前结论",
-  "needs": [{"pain": "用户痛点", "idea": "改进或工具想法", "type": "${NEED_TYPES.join("|")}"}],
-  "uncertain": ["需要人工确认的点"],
-  ${VL_TRANSCRIPT_SCHEMA}
-}`
+export function vlSystemFor(schema: FeishuTableSchema): string {
+  return `${buildExtractSystem(schema, "screenshot")}\n6. ${VL_TRANSCRIPT_RULE}\n在 JSON 中增加：\n${VL_TRANSCRIPT_SCHEMA}`
+}
 
 function mimeOf(buf: Buffer): string {
   if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg"
@@ -123,43 +94,32 @@ function nullToEmpty(v: unknown): string {
   return String(v)
 }
 
-export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string } = {}): Partial<RecordDraft> {
-  const needs = Array.isArray(d.needs) ? d.needs : []
+/** Transcript merge used by tests and as the chat half of a VL draft. */
+export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string } = {}): {
+  chat: string
+  uncertain: string[]
+  title: string
+  problem: string
+} {
   const uncertain = Array.isArray(d.uncertain) ? d.uncertain.map((u) => String(u)) : []
-  const dateRaw = d.date
-  const date =
-    typeof dateRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : undefined
   const transcribed = applyTranscript(d.transcript, uncertain, {
     me: ctx.me,
     contact: nullToEmpty(d.contact),
   })
   return {
     title: nullToEmpty(d.title),
-    ...(date ? { date } : {}),
-    contact: nullToEmpty(d.contact),
-    channel: (CHANNELS.includes(d.channel as never) ? d.channel : "微信") as RecordDraft["channel"],
-    product: nullToEmpty(d.product),
-    module: nullToEmpty(d.module),
-    category: nullToEmpty(d.category) || "使用咨询",
-    status: (["待处理", "跟进中", "已解决", "已关闭"].includes(d.status as string)
-      ? d.status
-      : "跟进中") as RecordDraft["status"],
     problem: nullToEmpty(d.problem),
-    process: nullToEmpty(d.process),
-    solution: nullToEmpty(d.solution),
-    needs: needs
-      .map((n) => {
-        const row = n as { pain?: unknown; idea?: unknown; type?: unknown }
-        return {
-          pain: nullToEmpty(row.pain),
-          idea: nullToEmpty(row.idea),
-          type: (NEED_TYPES.includes(row.type as never) ? row.type : "其他") as RecordDraft["needs"][number]["type"],
-        }
-      })
-      .filter((n) => n.pain || n.idea),
     uncertain: transcribed.uncertain,
     chat: transcribed.chat,
   }
+}
+
+function mimeOf(buf: Buffer): string {
+  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg"
+  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png"
+  if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif"
+  if (buf[0] === 0x52 && buf[1] === 0x49) return "image/webp"
+  return "image/jpeg"
 }
 
 function mapHttpError(status: number, body: string): VlExtractError {
@@ -223,6 +183,9 @@ export async function extractFromScreenshots(
     throw new VlExtractError("parse_error", `最多 ${MAX_SCREENSHOTS} 张截图`)
   }
 
+  const schemaState = await loadFeishuSchemaState()
+  if (!schemaState.ok) throw new VlExtractError("parse_error", schemaState.error)
+
   const compressed: Buffer[] = []
   for (const raw of images) {
     compressed.push(await compressImageBuffer(raw))
@@ -262,7 +225,10 @@ export async function extractFromScreenshots(
         max_tokens: resolveVlMaxTokens(),
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: EXTRACT_VL_SYSTEM },
+          {
+            role: "system",
+            content: vlSystemFor(schemaState.schema),
+          },
           { role: "user", content },
         ],
       }),
@@ -300,9 +266,11 @@ export async function extractFromScreenshots(
   }
 
   const speakerCtx = { me: opts.me, contact: typeof draftObj.contact === "string" ? draftObj.contact : "" }
+  const extracted = normalizeExtractedDraft(draftObj, schemaState.schema)
+  const transcribed = applyTranscript(draftObj.transcript, extracted.uncertain ?? [], speakerCtx)
   return {
     mode: "ai",
-    draft: normalizeVlDraft(draftObj, { me: opts.me }),
+    draft: { ...extracted, uncertain: transcribed.uncertain, chat: transcribed.chat },
     transcript: parseTranscript(draftObj.transcript, speakerCtx),
     source: "screenshot",
     imageCount: compressed.length,

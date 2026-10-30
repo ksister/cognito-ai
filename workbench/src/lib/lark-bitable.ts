@@ -3,6 +3,13 @@ import { spawn } from "node:child_process"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import {
+  attachmentFieldId,
+  buildCreateFields,
+  schemaHasWritableFieldId,
+  type FeishuTableSchema,
+} from "./feishu-schema"
+import { readFeishuTableSchema } from "./feishu-schema-load"
 import type { RecordDraft } from "./types"
 
 /** Field IDs for 技术支持表格 — locked by DoD */
@@ -384,6 +391,32 @@ async function fetchFieldMetaViaCli(cliPath: string, cfg: LarkCfg): Promise<Fiel
   return extractFieldItems(run.json)
 }
 
+/** Field names and select options from lark-cli. Used only to refresh config options. */
+export async function listFeishuFieldOptions(): Promise<
+  { ok: true; fields: { name: string; options: string[] }[] } | { ok: false; error: string }
+> {
+  const cfg = readCfg()
+  const missing = missingLarkTarget(cfg)
+  if (missing) return { ok: false, error: missing }
+  if (cfg.pushMode !== "cli") {
+    return { ok: false, error: "同步选项只走 lark-cli。请把 LARK_PUSH_MODE 设为 cli（默认）。" }
+  }
+  const resolved = await resolveLarkCli()
+  if (!resolved.path) return { ok: false, error: resolved.error || "未找到 lark-cli" }
+  try {
+    const fields = await fetchFieldMetaViaCli(resolved.path, cfg)
+    return {
+      ok: true,
+      fields: fields.map((f) => ({
+        name: f.field_name,
+        options: (f.property?.options ?? []).map((o) => o.name).filter(Boolean),
+      })),
+    }
+  } catch (e) {
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
 /**
  * CLI batch-create JSON (lark-cli 1.0.x help):
  * {"fields":["fld…",…],"rows":[[cell,…]]}
@@ -454,6 +487,7 @@ async function uploadAttachmentsViaCli(
   cliPath: string,
   cfg: LarkCfg,
   recordId: string,
+  fieldId: string,
   files: { name: string; path: string }[],
 ): Promise<{ ok: true } | { error: string; code: string | number }> {
   if (!files.length) return { ok: true }
@@ -467,7 +501,7 @@ async function uploadAttachmentsViaCli(
     "--record-id",
     recordId,
     "--field-id",
-    LARK_FIELDS.attachment,
+    fieldId,
   ]
   for (const f of files) {
     args.push("--file", f.path)
@@ -503,93 +537,20 @@ function optionsFromFields(fields: FieldMeta[]): LarkSelectOptions {
   }
 }
 
-function matchOption(value: string, options: string[]): string | null {
-  const v = value.trim()
-  if (!v) return null
-  const exact = options.find((o) => o === v)
-  if (exact) return exact
-  const lower = v.toLowerCase()
-  const ci = options.find((o) => o.toLowerCase() === lower)
-  if (ci) return ci
-  const contains = options.find((o) => o.includes(v) || v.includes(o))
-  return contains ?? null
+export { buildCreateFields } from "./feishu-schema"
+
+const NO_FIELD_ID_MESSAGE =
+  "飞书表结构配置里没有可写入的 fieldId。本地记录已保留。请用「复制为飞书行」；cli/api 建行需要在私有 feishu-table.json 里填写 fieldId（不要提交到仓库）。"
+
+function missingWritableFieldId(schema: FeishuTableSchema): string | null {
+  return schemaHasWritableFieldId(schema) ? null : NO_FIELD_ID_MESSAGE
 }
 
-/**
- * Build ordinary fields for batch_create — NEVER includes attachment field.
- * Mapping notes:
- * - 解决方式 ← category（黄区问题分类）匹配 select；未命中跳过
- * - 软件版本 ← product；未命中跳过
- * - 处理状态 ← status；未命中不写并警告
- * - 支持类型 ← channel 匹配；项目/现场 ← module 匹配
- * Select CellValue for CLI = string (not array); person = [{id}].
- */
-export function buildCreateFields(
-  draft: RecordDraft,
-  options: LarkSelectOptions,
-  companyOption: string | undefined,
-  handlerOpenIds: string[] | undefined,
-  warnings: string[],
-): Record<string, unknown> {
-  const fields: Record<string, unknown> = {}
-  const customer = draft.customer.trim()
-  const companyPick =
-    (companyOption && options.company.includes(companyOption) && companyOption) ||
-    matchOption(customer, options.company)
-
-  let contactParts: string[] = []
-  if (companyPick) {
-    fields[LARK_FIELDS.company] = companyPick
-    if (companyPick === FALLBACK_OTHER_COMPANY && customer) contactParts.push(customer)
-  } else if (options.company.includes(FALLBACK_OTHER_COMPANY)) {
-    fields[LARK_FIELDS.company] = FALLBACK_OTHER_COMPANY
-    if (customer) contactParts.push(customer)
-    warnings.push(`客户公司未命中选项，已写入「${FALLBACK_OTHER_COMPANY}」，原名并入客户/联系人`)
-  } else if (customer) {
-    contactParts.push(customer)
-    warnings.push("客户公司选项中无「其他-待确认」且未命中，已跳过客户公司字段")
-  }
-
-  if (draft.contact?.trim()) contactParts.push(draft.contact.trim())
-  contactParts = [...new Set(contactParts)]
-  if (contactParts.length) fields[LARK_FIELDS.contact] = contactParts.join(" / ")
-
-  const title = (draft.title || draft.problem || "").trim().slice(0, 200)
-  if (title) fields[LARK_FIELDS.title] = title
-
-  if (draft.problem?.trim()) {
-    fields[LARK_FIELDS.problem] = draft.problem.replace(/\r\n/g, "\n")
-  }
-
-  const productHit = matchOption(draft.product ?? "", options.product)
-  if (productHit) fields[LARK_FIELDS.product] = productHit
-  else if (draft.product?.trim()) warnings.push(`软件版本「${draft.product}」未命中表内选项，已跳过`)
-
-  const resolveHit = matchOption(draft.category ?? "", options.resolveMethod)
-  if (resolveHit) fields[LARK_FIELDS.resolveMethod] = resolveHit
-  else if (draft.category?.trim())
-    warnings.push(`解决方式/分类「${draft.category}」未命中表内选项，已跳过`)
-
-  const statusHit = matchOption(draft.status ?? "", options.status)
-  if (statusHit) fields[LARK_FIELDS.status] = statusHit
-  else if (draft.status?.trim())
-    warnings.push(`处理状态「${draft.status}」未命中表内选项，请改正后再推；本次未写入该字段`)
-
-  const ids = (handlerOpenIds ?? []).map((id) => id.trim()).filter((id) => id.startsWith("ou_"))
-  if (ids.length) {
-    fields[LARK_FIELDS.handlers] = ids.map((id) => ({ id }))
-  }
-
-  if (draft.solution?.trim()) fields[LARK_FIELDS.solution] = draft.solution.replace(/\r\n/g, "\n")
-  if (draft.process?.trim()) fields[LARK_FIELDS.process] = draft.process.replace(/\r\n/g, "\n")
-
-  const supportHit = matchOption(draft.channel ?? "", options.supportType)
-  if (supportHit) fields[LARK_FIELDS.supportType] = supportHit
-
-  const siteHit = matchOption(draft.module ?? "", options.site)
-  if (siteHit) fields[LARK_FIELDS.site] = siteHit
-
-  return fields
+function resolveAttachFieldId(schema: FeishuTableSchema, warnings: string[]): string {
+  const fromSchema = attachmentFieldId(schema)
+  if (fromSchema) return fromSchema
+  warnings.push("附件列未在配置里写 fieldId，上传仍使用代码中的附件字段 ID。若不是该列，请在私有配置里填写。")
+  return LARK_FIELDS.attachment
 }
 
 // ——— Optional OpenAPI Bearer fallback (LARK_PUSH_MODE=api) ———
@@ -744,6 +705,7 @@ async function updateAttachmentApi(
   token: string,
   cfg: LarkCfg,
   recordId: string,
+  fieldId: string,
   files: { file_token: string; name: string }[],
 ): Promise<{ ok: true } | { error: string; code: number }> {
   const json = await larkFetch(
@@ -754,7 +716,7 @@ async function updateAttachmentApi(
       query: { user_id_type: "open_id" },
       body: JSON.stringify({
         fields: {
-          [LARK_FIELDS.attachment]: files.map((f) => ({
+          [fieldId]: files.map((f) => ({
             file_token: f.file_token,
             name: f.name,
           })),
@@ -888,9 +850,15 @@ async function resolveScreenshotFiles(
   return []
 }
 
-async function pushViaCli(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushResult> {
+async function pushViaCli(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTableSchema): Promise<LarkPushResult> {
   const steps: LarkPushResult["steps"] = [{ step: "local", ok: true, message: "本地已落盘" }]
   const warnings: string[] = []
+
+  const noFieldId = missingWritableFieldId(schema)
+  if (noFieldId) {
+    steps.push({ step: "config", ok: false, message: noFieldId })
+    return { ok: false, steps, warnings, error: noFieldId, code: "schema_no_field_id", mode: "cli" }
+  }
 
   const resolved = await resolveLarkCli()
   if (!resolved.path) {
@@ -905,10 +873,8 @@ async function pushViaCli(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
     }
   }
 
-  let options: LarkSelectOptions
   try {
-    const fields = await fetchFieldMetaViaCli(resolved.path, cfg)
-    options = optionsFromFields(fields)
+    await fetchFieldMetaViaCli(resolved.path, cfg)
   } catch (e) {
     const err = e as Error & { code?: string | number }
     steps.push({ step: "auth", ok: false, message: err.message })
@@ -917,7 +883,7 @@ async function pushViaCli(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
 
   const createFields = buildCreateFields(
     input.draft,
-    options,
+    schema,
     input.companyOption,
     input.handlerOpenIds,
     warnings,
@@ -942,7 +908,13 @@ async function pushViaCli(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
     return { ok: true, recordId: created.recordId, steps, warnings, mode: "cli" }
   }
 
-  const up = await uploadAttachmentsViaCli(resolved.path, cfg, created.recordId, files)
+  const up = await uploadAttachmentsViaCli(
+    resolved.path,
+    cfg,
+    created.recordId,
+    resolveAttachFieldId(schema, warnings),
+    files,
+  )
   if ("error" in up) {
     steps.push({ step: "attach", ok: false, message: `${up.error} (${up.code})` })
     return {
@@ -963,9 +935,15 @@ async function pushViaCli(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
   return { ok: true, recordId: created.recordId, steps, warnings, mode: "cli" }
 }
 
-async function pushViaApi(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushResult> {
+async function pushViaApi(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTableSchema): Promise<LarkPushResult> {
   const steps: LarkPushResult["steps"] = [{ step: "local", ok: true, message: "本地已落盘" }]
   const warnings: string[] = []
+
+  const noFieldId = missingWritableFieldId(schema)
+  if (noFieldId) {
+    steps.push({ step: "config", ok: false, message: noFieldId })
+    return { ok: false, steps, warnings, error: noFieldId, code: "schema_no_field_id", mode: "api" }
+  }
 
   const auth = await getUserAccessToken(cfg)
   if (!auth.token) {
@@ -973,10 +951,8 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
     return { ok: false, steps, warnings, error: auth.error, code: "missing_credentials", mode: "api" }
   }
 
-  let options: LarkSelectOptions
   try {
-    const fields = await fetchFieldMetaApi(auth.token, cfg)
-    options = optionsFromFields(fields)
+    await fetchFieldMetaApi(auth.token, cfg)
   } catch (e) {
     const err = e as Error & { code?: number }
     steps.push({ step: "auth", ok: false, message: err.message })
@@ -985,7 +961,7 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
 
   const createFields = buildCreateFields(
     input.draft,
-    options,
+    schema,
     input.companyOption,
     input.handlerOpenIds,
     warnings,
@@ -1042,7 +1018,13 @@ async function pushViaApi(input: LarkPushInput, cfg: LarkCfg): Promise<LarkPushR
   }
   steps.push({ step: "upload", ok: true, message: `${tokens.length} 张` })
 
-  const upd = await updateAttachmentApi(auth.token, cfg, created.recordId, tokens)
+  const upd = await updateAttachmentApi(
+    auth.token,
+    cfg,
+    created.recordId,
+    resolveAttachFieldId(schema, warnings),
+    tokens,
+  )
   if ("error" in upd) {
     steps.push({ step: "attach", ok: false, message: `${upd.error} (${upd.code})` })
     return {
@@ -1080,8 +1062,25 @@ export async function pushRecordToFeishu(input: LarkPushInput): Promise<LarkPush
       mode: cfg.pushMode,
     }
   }
-  if (cfg.pushMode === "api") return pushViaApi(input, cfg)
-  return pushViaCli(input, cfg)
+  let schema: FeishuTableSchema
+  try {
+    schema = await readFeishuTableSchema()
+  } catch (e) {
+    const message = (e as Error).message
+    return {
+      ok: false,
+      steps: [
+        { step: "local", ok: true, message: "本地已落盘" },
+        { step: "config", ok: false, message },
+      ],
+      warnings: [],
+      error: message,
+      code: "feishu_schema",
+      mode: cfg.pushMode,
+    }
+  }
+  if (cfg.pushMode === "api") return pushViaApi(input, cfg, schema)
+  return pushViaCli(input, cfg, schema)
 }
 
 /** Read saved screenshot files from KB for re-push scenarios */
