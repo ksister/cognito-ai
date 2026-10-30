@@ -115,7 +115,7 @@ function parseNeeds(v: unknown): Need[] {
     .filter((n) => n.pain || n.idea)
 }
 
-function recordToMarkdown(r: SupportRecord): string {
+export function recordToMarkdown(r: SupportRecord): string {
   const fm = {
     title: r.title,
     date: r.date,
@@ -159,7 +159,7 @@ function recordToMarkdown(r: SupportRecord): string {
   return matter.stringify(body, fm)
 }
 
-function markdownToRecord(customer: string, file: string, raw: string): SupportRecord {
+export function markdownToRecord(customer: string, file: string, raw: string): SupportRecord {
   const { data, content } = matter(raw)
   const body = content.replace(/^\s*# [^\n]*\n/, "")
   const s = splitSections(body)

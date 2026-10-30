@@ -68,7 +68,7 @@ export type CustomerSummary = CustomerProfile & {
   needCount: number
 }
 
-export type ExtractErrorCode = "timeout" | "auth" | "rate_limit" | "unsafe" | "parse_error" | "partial"
+export type ExtractErrorCode = "timeout" | "auth" | "rate_limit" | "unsafe" | "parse_error" | "partial" | "truncated"
 
 export type FeishuPushStepResult = {
   step: string
@@ -85,12 +85,22 @@ export type FeishuPushResult = {
   code?: string | number
 }
 
+/** One line from a screenshot VL transcript, before formatting into `chat`. */
+export type TranscriptTurn = {
+  speaker: string
+  text: string
+  /** `time` is a standalone separator such as `—— 10月28日 09:12 ——`, with no speaker. */
+  kind?: "speech" | "time"
+}
+
 export type ExtractResult = {
   mode: "ai" | "rules"
   draft: Partial<RecordDraft>
   warning?: string
   source?: "screenshot" | "paste"
   imageCount?: number
+  /** Screenshot VL only. The saved 原始聊天记录 is `draft.chat`, already formatted. */
+  transcript?: TranscriptTurn[]
 }
 
 export const OPEN_STATUSES: Status[] = ["待处理", "跟进中"]

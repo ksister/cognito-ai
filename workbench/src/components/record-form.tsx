@@ -37,6 +37,7 @@ import {
   type SupportRecord,
 } from "@/lib/types"
 import { toTsvRows } from "@/lib/feishu"
+import { OCR_TRANSCRIPT_MARKER, resolveExtractedChat } from "@/lib/transcript"
 
 const MAX_SHOTS = 9
 
@@ -77,6 +78,7 @@ const ERR_HINT: Record<ExtractErrorCode, string> = {
   unsafe: "内容被拦截",
   parse_error: "解析失败",
   partial: "部分成功",
+  truncated: "输出被截断",
 }
 
 export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustomer }: Props) {
@@ -111,6 +113,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     mode?: "cli" | "api"
   } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const transcriptBaseline = useRef<string | null>(null)
   const dragRef = useRef(false)
   const shotsRef = useRef(shots)
   shotsRef.current = shots
@@ -270,6 +273,14 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       toast.error("请先上传截图，或展开粘贴文字")
       return
     }
+    if (
+      transcriptBaseline.current != null &&
+      d.chat !== transcriptBaseline.current &&
+      d.chat.includes(OCR_TRANSCRIPT_MARKER)
+    ) {
+      const ok = window.confirm("转写已修改。继续整理会覆盖当前转写，要继续吗？")
+      if (!ok) return
+    }
     setExtracting(true)
     setWarning(undefined)
     setVlError(undefined)
@@ -303,16 +314,20 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       if (!data.draft || typeof data.draft !== "object") {
         throw new Error("提取结果为空")
       }
+      const source = data.source ?? (useShots ? "screenshot" : "paste")
+      const nextChat = resolveExtractedChat(source, d.chat, data.draft.chat)
+      transcriptBaseline.current = source === "screenshot" ? nextChat : null
       setD((p) => ({
         ...p,
         ...Object.fromEntries(Object.entries(data.draft).filter(([, v]) => v !== undefined && v !== "")),
         customer: p.customer,
-        chat: p.chat,
         thoughts: p.thoughts,
+        chat: resolveExtractedChat(source, p.chat, data.draft.chat),
       }))
       setWarning(data.warning)
       setExtracted(true)
-      setLastSource(data.source ?? (useShots ? "screenshot" : "paste"))
+      setLastSource(source)
+      if (source === "screenshot") setShowPaste(false)
       toast.success(data.mode === "ai" ? "AI 已整理，请核对黄色区域后确认" : "已用规则初步提取，请核对")
     } catch (e) {
       toast.error(`整理失败：${(e as Error).message}`)
@@ -539,10 +554,13 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
 
           {(showPaste || editing || (!shots.length && d.chat)) && (
             <div className="space-y-2 rounded-lg border border-dashed p-3">
-              <Label>文字粘贴（次要）</Label>
+              <Label>{d.chat.startsWith(OCR_TRANSCRIPT_MARKER) ? "原始聊天记录" : "文字粘贴（次要）"}</Label>
               <Textarea
                 value={d.chat}
-                onChange={(e) => set("chat", e.target.value)}
+                onChange={(e) => {
+                  set("chat", e.target.value)
+                  if (!editing) setConfirmed(false)
+                }}
                 placeholder={"张工 2026-10-28 09:12\n极耳定位又偏了……\n小李 2026-10-28 09:15\n偏多少？有截图吗？"}
                 className="min-h-48 font-mono text-xs leading-relaxed"
               />
@@ -587,6 +605,23 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                     // eslint-disable-next-line @next/next/no-img-element
                     <img key={s.id} src={s.url} alt={`核对图 ${i + 1}`} className="h-24 w-auto rounded border object-cover" />
                   ))}
+                </div>
+              )}
+              {lastSource === "screenshot" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="ocr-transcript">原始聊天记录（可改）</Label>
+                  <p className="text-xs text-amber-900/80">
+                    对照上方截图改转写。首行是 {OCR_TRANSCRIPT_MARKER}，之后每行「发言人：内容」。改动后需重新确认。保存后这一节视为原始记录。
+                  </p>
+                  <Textarea
+                    id="ocr-transcript"
+                    value={d.chat}
+                    onChange={(e) => {
+                      set("chat", e.target.value)
+                      setConfirmed(false)
+                    }}
+                    className="min-h-40 bg-background font-mono text-xs leading-relaxed"
+                  />
                 </div>
               )}
               {warning && <p className="text-sm text-amber-900">{warning}</p>}
