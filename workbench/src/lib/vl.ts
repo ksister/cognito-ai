@@ -7,6 +7,7 @@ import {
   type ExtractResult,
   type RecordDraft,
 } from "./types"
+import { VL_TRANSCRIPT_RULE, VL_TRANSCRIPT_SCHEMA, applyTranscript, parseTranscript } from "./transcript"
 
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY
 const DASHSCOPE_BASE_URL = (
@@ -33,7 +34,7 @@ export class VlExtractError extends Error {
   }
 }
 
-const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程师）助理。用户会按时间顺序上传多张微信或飞书的技术支持聊天截图，你要合并为同一会话，整理成结构化的技术支持记录。
+export const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程师）助理。用户会按时间顺序上传多张微信或飞书的技术支持聊天截图，你要合并为同一会话，整理成结构化的技术支持记录。
 
 严格要求：
 1. 只根据截图中可见的文字与界面信息整理，不要编造原文没有的事实。看不清或不确定的字段填 null，并写入 uncertain。
@@ -41,6 +42,7 @@ const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程�
 3. 凡是不确定的地方（客户名、型号、版本、是否真正解决、因果关系、指代不清等），都写进 uncertain，每条写清楚「哪里不确定 + 截图依据」。
 4. needs 用来沉淀产品需求线索：从抱怨、绕路做法、「能不能/希望/太麻烦」等表达中提炼。没有就返回空数组。
 5. 使用简体中文，简洁具体，保留关键参数。只输出 JSON，不要 Markdown 围栏或其他说明。
+6. ${VL_TRANSCRIPT_RULE}
 
 输出 JSON，字段如下：
 {
@@ -56,6 +58,7 @@ const EXTRACT_VL_SYSTEM = `你是一名机器视觉公司的 AE（应用工程�
   "process": "排查与沟通过程，用 1. 2. 3. 分步",
   "solution": "最终解决方案或当前结论",
   "needs": [{"pain": "用户痛点", "idea": "改进或工具想法", "type": "${NEED_TYPES.join("|")}"}],
+  ${VL_TRANSCRIPT_SCHEMA},
   "uncertain": ["需要人工确认的点"]
 }`
 
@@ -72,12 +75,13 @@ function nullToEmpty(v: unknown): string {
   return String(v)
 }
 
-function normalizeDraft(d: Record<string, unknown>): Partial<RecordDraft> {
+export function normalizeVlDraft(d: Record<string, unknown>): Partial<RecordDraft> {
   const needs = Array.isArray(d.needs) ? d.needs : []
   const uncertain = Array.isArray(d.uncertain) ? d.uncertain.map((u) => String(u)) : []
   const dateRaw = d.date
   const date =
     typeof dateRaw === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : undefined
+  const transcribed = applyTranscript(d.transcript, uncertain)
   return {
     title: nullToEmpty(d.title),
     ...(date ? { date } : {}),
@@ -102,7 +106,8 @@ function normalizeDraft(d: Record<string, unknown>): Partial<RecordDraft> {
         }
       })
       .filter((n) => n.pain || n.idea),
-    uncertain,
+    uncertain: transcribed.uncertain,
+    chat: transcribed.chat,
   }
 }
 
@@ -184,7 +189,7 @@ export async function extractFromScreenshots(
     opts.profile ? `【我的背景】\n${opts.profile}` : "",
     opts.customer ? `【客户】${opts.customer}` : "",
     opts.me ? `【我在聊天中的昵称】${opts.me}（其余发言人默认是客户方）` : "",
-    `【说明】以上共 ${compressed.length} 张截图，按顺序为同一会话。请只输出 JSON。`,
+    `【说明】以上共 ${compressed.length} 张截图，按顺序为同一会话。请逐字转写到 transcript，并只输出 JSON。`,
   ]
     .filter(Boolean)
     .join("\n\n")
@@ -244,7 +249,8 @@ export async function extractFromScreenshots(
 
   return {
     mode: "ai",
-    draft: normalizeDraft(draftObj),
+    draft: normalizeVlDraft(draftObj),
+    transcript: parseTranscript(draftObj.transcript),
     source: "screenshot",
     imageCount: compressed.length,
   }

@@ -85,12 +85,20 @@ export type FeishuPushResult = {
   code?: string | number
 }
 
+/** One spoken line from a screenshot VL transcript, before formatting into `chat`. */
+export type TranscriptTurn = {
+  speaker: string
+  text: string
+}
+
 export type ExtractResult = {
   mode: "ai" | "rules"
   draft: Partial<RecordDraft>
   warning?: string
   source?: "screenshot" | "paste"
   imageCount?: number
+  /** Screenshot VL only. The saved 原始聊天记录 is `draft.chat`, already formatted. */
+  transcript?: TranscriptTurn[]
 }
 
 export const OPEN_STATUSES: Status[] = ["待处理", "跟进中"]
