@@ -61,6 +61,12 @@ export type SupportRecord = RecordDraft & {
   id: string
   file: string
   feishuSynced: boolean
+  /** Feishu row id. Empty until create succeeds. Later pushes update this row. */
+  feishuRecordId: string
+  /** ISO time of the last fully successful push. */
+  feishuSyncedAt: string
+  /** Screenshot filenames already sent. Re-push uploads names that are not in this list. */
+  feishuAttached: string[]
   created: string
   updated: string
 }
@@ -94,6 +100,8 @@ export type FeishuPushStepResult = {
 export type FeishuPushResult = {
   ok: boolean
   recordId?: string
+  /** `created` is a new row. `updated` is the row already stored in feishu_record_id. */
+  action?: "created" | "updated"
   steps: FeishuPushStepResult[]
   warnings: string[]
   error?: string

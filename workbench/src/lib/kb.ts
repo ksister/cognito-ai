@@ -115,6 +115,13 @@ function str(v: unknown): string {
   return String(v)
 }
 
+/** Keep the time. `str` is for calendar dates and would drop the clock. */
+function isoStamp(v: unknown): string {
+  if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString()
+  if (v === null || v === undefined) return ""
+  return String(v)
+}
+
 function oneOf<T extends string>(v: unknown, list: readonly T[], fallback: T): T {
   return list.includes(v as T) ? (v as T) : fallback
 }
@@ -191,6 +198,9 @@ export function recordToMarkdown(r: SupportRecord): string {
     status: r.status,
     ...extraFrontmatter(r),
     feishu_synced: r.feishuSynced,
+    ...(r.feishuRecordId ? { feishu_record_id: r.feishuRecordId } : {}),
+    ...(r.feishuSyncedAt ? { feishu_synced_at: r.feishuSyncedAt } : {}),
+    ...(r.feishuAttached?.length ? { feishu_attached: r.feishuAttached } : {}),
     needs: r.needs,
     created: r.created,
     updated: r.updated,
@@ -251,6 +261,9 @@ export function markdownToRecord(customer: string, file: string, raw: string): S
     docs: str(data.docs),
     local_id: str(data.local_id),
     feishuSynced: Boolean(data.feishu_synced),
+    feishuRecordId: str(data.feishu_record_id),
+    feishuSyncedAt: isoStamp(data.feishu_synced_at),
+    feishuAttached: parseScreenshots(data.feishu_attached),
     needs: parseNeeds(data.needs),
     created: str(data.created),
     updated: str(data.updated),
@@ -346,6 +359,9 @@ export async function createRecord(draft: RecordDraft): Promise<SupportRecord> {
     id: `${d.customer}/${file.replace(/\.md$/, "")}`,
     file,
     feishuSynced: false,
+    feishuRecordId: "",
+    feishuSyncedAt: "",
+    feishuAttached: [],
     created: now,
     updated: now,
   }
@@ -356,7 +372,12 @@ export async function createRecord(draft: RecordDraft): Promise<SupportRecord> {
 export async function updateRecord(
   customer: string,
   file: string,
-  patch: Partial<RecordDraft> & { feishuSynced?: boolean },
+  patch: Partial<RecordDraft> & {
+    feishuSynced?: boolean
+    feishuRecordId?: string
+    feishuSyncedAt?: string
+    feishuAttached?: string[]
+  },
 ): Promise<SupportRecord> {
   const existing = await getRecord(customer, file)
   if (!existing) throw new Error("记录不存在")
@@ -371,6 +392,9 @@ export async function updateRecord(
     ...existing,
     ...d,
     feishuSynced: patch.feishuSynced ?? existing.feishuSynced,
+    feishuRecordId: patch.feishuRecordId?.trim() || existing.feishuRecordId,
+    feishuSyncedAt: patch.feishuSyncedAt?.trim() || existing.feishuSyncedAt,
+    feishuAttached: patch.feishuAttached?.length ? patch.feishuAttached : existing.feishuAttached,
     updated: nowIso(),
   }
   const p = within(customerDir(existing.customer), "records", existing.file)

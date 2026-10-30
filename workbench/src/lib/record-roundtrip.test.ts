@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 const kb = mkdtempSync(path.join(os.tmpdir(), "feishu-t9-"))
 process.env.KB_DIR = kb
 
-const { createRecord, getRecord } = await import("./kb")
+const { createRecord, getRecord, updateRecord } = await import("./kb")
 
 describe("old records without config-driven keys", () => {
   beforeAll(() => {
@@ -70,6 +70,9 @@ updated: '2026-10-15T00:00:00.000Z'
     expect(rec?.dimensions).toEqual([])
     expect(rec?.case_visibility).toBe("")
     expect(rec?.local_id).toBe("")
+    expect(rec?.feishuRecordId).toBe("")
+    expect(rec?.feishuSyncedAt).toBe("")
+    expect(rec?.feishuAttached).toEqual([])
     expect(rec?.extras).toEqual({})
   })
 
@@ -114,5 +117,60 @@ updated: '2026-10-15T00:00:00.000Z'
     expect(again?.category).toBe("算法效果")
     expect(again?.thoughts).toBe("思考原文")
     expect(again?.problem).toBe("问题")
+    expect(again?.feishuRecordId).toBe("")
+  })
+
+  it("keeps feishu_record_id when the record is edited again", async () => {
+    const created = await createRecord({
+      title: "同一行",
+      date: "2026-10-30",
+      customer: "示例客户",
+      channel: "微信",
+      contact: "",
+      product: "",
+      module: "",
+      category: "",
+      status: "待处理",
+      problem: "先建行",
+      process: "",
+      solution: "",
+      thoughts: "思考留着",
+      needs: [],
+      uncertain: [],
+      chat: "",
+      screenshots: ["2026-10-30-同一行-1.jpg"],
+      site: "",
+      support_type: "",
+      resolution: "",
+      fixed_version: "",
+      dimensions: [],
+      inspection_types: [],
+      industries: [],
+      case_visibility: "",
+      docs: "",
+      local_id: "",
+      extras: {},
+    })
+    const slug = created.file.replace(/\.md$/, "")
+    const marked = await updateRecord(created.customer, slug, {
+      feishuRecordId: "rec_example_same",
+      feishuSynced: true,
+      feishuSyncedAt: "2026-10-30T02:00:00.000Z",
+      feishuAttached: ["2026-10-30-同一行-1.jpg"],
+    })
+    expect(marked.feishuRecordId).toBe("rec_example_same")
+    expect(marked.feishuSynced).toBe(true)
+    expect(marked.thoughts).toBe("思考留着")
+
+    const edited = await updateRecord(created.customer, slug, { status: "已解决" })
+    expect(edited.feishuRecordId).toBe("rec_example_same")
+    expect(edited.feishuSynced).toBe(true)
+    expect(edited.feishuAttached).toEqual(["2026-10-30-同一行-1.jpg"])
+    expect(edited.status).toBe("已解决")
+    expect(edited.thoughts).toBe("思考留着")
+
+    const again = await getRecord("示例客户", slug)
+    expect(again?.feishuRecordId).toBe("rec_example_same")
+    expect(again?.feishuSyncedAt).toContain("2026-10-30")
   })
 })
