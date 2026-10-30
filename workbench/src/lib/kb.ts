@@ -371,6 +371,31 @@ export function filePath(customer: string, name: string): string {
   return within(path.join(customerDir(customer), "files"), safeName(name))
 }
 
+
+/**
+ * 确认保存后备份原图。
+ * 路径约定（相对仓库根）：customers/<客户名>/files/截图-YYYYMMDD-序号.jpg
+ * 日期 = 保存当日本地日历日（此处用 localDate，写死为「保存日」而非聊天日）。
+ * 同批序号从 1 起；若当日已有同名文件，则从下一个空闲序号起连续编号。
+ */
+export async function saveScreenshotBatch(customer: string, images: Buffer[]): Promise<string[]> {
+  if (!images.length) return []
+  const name = safeName(customer)
+  const dir = path.join(customerDir(name), "files")
+  await fs.mkdir(dir, { recursive: true })
+  // 日期 = 保存当日本地日历日 → YYYYMMDD
+  const ymd = localDate().replace(/-/g, "")
+  let start = 1
+  while (await exists(path.join(dir, `截图-${ymd}-${start}.jpg`))) start++
+  const saved: string[] = []
+  for (let i = 0; i < images.length; i++) {
+    const file = `截图-${ymd}-${start + i}.jpg`
+    await fs.writeFile(within(dir, file), images[i])
+    saved.push(file)
+  }
+  return saved
+}
+
 export async function readProfileContext(): Promise<string> {
   const p = path.join(KB_ROOT, "01-me", "profile.md")
   if (!(await exists(p))) return ""

@@ -68,10 +68,14 @@ export type CustomerSummary = CustomerProfile & {
   needCount: number
 }
 
+export type ExtractErrorCode = "timeout" | "auth" | "rate_limit" | "unsafe" | "parse_error" | "partial"
+
 export type ExtractResult = {
   mode: "ai" | "rules"
   draft: Partial<RecordDraft>
   warning?: string
+  source?: "screenshot" | "paste"
+  imageCount?: number
 }
 
 export const OPEN_STATUSES: Status[] = ["待处理", "跟进中"]

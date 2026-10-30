@@ -1,6 +1,7 @@
 import { PageHeader } from "@/components/bits"
 import { RecordForm } from "@/components/record-form"
 import { aiLabel } from "@/lib/ai"
+import { vlLabel } from "@/lib/vl"
 import { listCustomerNames } from "@/lib/kb"
 
 export const dynamic = "force-dynamic"
@@ -9,10 +10,14 @@ export default async function NewRecordPage({ searchParams }: PageProps<"/new">)
   const { customer } = await searchParams
   return (
     <>
-      <PageHeader title="记一笔" description="粘贴聊天记录 → AI 整理 → 你来核对并补充思考 → 一键保存。" />
+      <PageHeader
+        title="记一笔"
+        description="上传微信/飞书聊天截图 → 通义 VL 整理 → 黄区核对 → 确认保存（原文图备份到客户目录）。也可粘贴文字。"
+      />
       <RecordForm
         customers={await listCustomerNames()}
         aiLabel={aiLabel()}
+        vlLabel={vlLabel()}
         defaultCustomer={typeof customer === "string" ? customer : undefined}
       />
     </>

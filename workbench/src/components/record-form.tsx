@@ -1,26 +1,42 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import { AlertTriangle, Check, Loader2, Plus, Save, Sparkles, Trash2, Wand2 } from "lucide-react"
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  ImagePlus,
+  Loader2,
+  Plus,
+  Save,
+  Sparkles,
+  Trash2,
+  Wand2,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { recordHref, selectClass } from "@/components/bits"
+import { compressImageFile } from "@/lib/client-image"
 import {
   CATEGORIES,
   CHANNELS,
   NEED_TYPES,
   STATUSES,
   emptyDraft,
+  type ExtractErrorCode,
   type ExtractResult,
   type Need,
   type RecordDraft,
   type SupportRecord,
 } from "@/lib/types"
+
+const MAX_SHOTS = 9
 
 const SAMPLE_CHAT = `张工-宁德某电池厂 2026-10-28 09:12
 早上好，极耳定位那个工位又开始偏了，昨天下午还好好的
@@ -40,16 +56,28 @@ const SAMPLE_CHAT = `张工-宁德某电池厂 2026-10-28 09:12
 小李 2026-10-28 09:45
 好的，这个需求我记下来反馈给研发。另外建议匹配分数低于阈值时让软件报警，而不是沿用上一次结果`
 
+type Shot = { id: string; file: File; url: string }
+
 type Props = {
   customers: string[]
   aiLabel: string
+  vlLabel?: string
   initial?: SupportRecord
   defaultCustomer?: string
 }
 
 const THOUGHT_PROMPTS = ["根因判断：", "客户真正想要的是：", "软件可以改进：", "下次遇到可以直接：", "需要补充到知识库："]
 
-export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Props) {
+const ERR_HINT: Record<ExtractErrorCode, string> = {
+  timeout: "请求超时",
+  auth: "鉴权失败",
+  rate_limit: "触发限流",
+  unsafe: "内容被拦截",
+  parse_error: "解析失败",
+  partial: "部分成功",
+}
+
+export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustomer }: Props) {
   const router = useRouter()
   const editing = Boolean(initial)
   const [d, setD] = useState<RecordDraft>(() => (initial ? { ...initial } : emptyDraft(defaultCustomer ?? "")))
@@ -58,6 +86,13 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
   const [saving, setSaving] = useState(false)
   const [warning, setWarning] = useState<string>()
   const [extracted, setExtracted] = useState(editing)
+  const [confirmed, setConfirmed] = useState(editing)
+  const [shots, setShots] = useState<Shot[]>([])
+  const [showPaste, setShowPaste] = useState(false)
+  const [lastSource, setLastSource] = useState<"screenshot" | "paste" | undefined>()
+  const [vlError, setVlError] = useState<string>()
+  const fileRef = useRef<HTMLInputElement>(null)
+  const dragRef = useRef(false)
 
   useEffect(() => {
     const saved = localStorage.getItem("ae.me")
@@ -66,26 +101,103 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
     if (saved) setMe(saved)
   }, [])
 
+  useEffect(() => {
+    return () => {
+      for (const s of shots) URL.revokeObjectURL(s.url)
+    }
+    // only on unmount; shots cleaned when removed individually
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const set = <K extends keyof RecordDraft>(k: K, v: RecordDraft[K]) => setD((p) => ({ ...p, [k]: v }))
   const setNeed = (i: number, patch: Partial<Need>) =>
     set("needs", d.needs.map((n, j) => (j === i ? { ...n, ...patch } : n)))
 
+  async function addFiles(list: FileList | File[]) {
+    const incoming = [...list].filter((f) => f.type.startsWith("image/"))
+    if (!incoming.length) {
+      toast.error("请选择图片文件")
+      return
+    }
+    const room = MAX_SHOTS - shots.length
+    if (room <= 0) {
+      toast.error(`最多 ${MAX_SHOTS} 张截图，无法再加入`)
+      return
+    }
+    if (incoming.length > room) {
+      toast.error(`最多 ${MAX_SHOTS} 张，第 ${MAX_SHOTS + 1} 张及之后未加入`)
+    }
+    const accepted = incoming.slice(0, room)
+    const next: Shot[] = []
+    for (const f of accepted) {
+      const compressed = await compressImageFile(f)
+      next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file: compressed, url: URL.createObjectURL(compressed) })
+    }
+    setShots((p) => [...p, ...next])
+    setConfirmed(false)
+    setVlError(undefined)
+  }
+
+  function removeShot(id: string) {
+    setShots((p) => {
+      const hit = p.find((s) => s.id === id)
+      if (hit) URL.revokeObjectURL(hit.url)
+      return p.filter((s) => s.id !== id)
+    })
+    setConfirmed(false)
+  }
+
+  function moveShot(id: string, dir: -1 | 1) {
+    setShots((p) => {
+      const i = p.findIndex((s) => s.id === id)
+      const j = i + dir
+      if (i < 0 || j < 0 || j >= p.length) return p
+      const copy = [...p]
+      ;[copy[i], copy[j]] = [copy[j], copy[i]]
+      return copy
+    })
+    setConfirmed(false)
+  }
+
   async function extract() {
-    if (!d.chat.trim()) {
-      toast.error("先粘贴聊天记录")
+    const useShots = shots.length > 0
+    if (!useShots && !d.chat.trim()) {
+      toast.error("请先上传截图，或展开粘贴文字")
       return
     }
     setExtracting(true)
     setWarning(undefined)
+    setVlError(undefined)
+    setConfirmed(false)
     try {
       localStorage.setItem("ae.me", me)
-      const res = await fetch("/api/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat: d.chat, customer: d.customer, me }),
-      })
-      const data = (await res.json()) as ExtractResult & { error?: string }
-      if (!res.ok) throw new Error(data.error)
+      let res: Response
+      if (useShots) {
+        const form = new FormData()
+        for (const s of shots) form.append("images", s.file, s.file.name)
+        form.append("customer", d.customer)
+        form.append("me", me)
+        res = await fetch("/api/extract", { method: "POST", body: form })
+      } else {
+        res = await fetch("/api/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat: d.chat, customer: d.customer, me }),
+        })
+      }
+      const data = (await res.json()) as ExtractResult & { error?: string; code?: ExtractErrorCode }
+      if (!res.ok) {
+        const hint = data.code ? ERR_HINT[data.code] : "失败"
+        const msg = data.error || hint
+        if (useShots) {
+          setVlError(msg)
+          setShowPaste(true)
+        }
+        throw new Error(msg)
+      }
+      if (!data.draft || typeof data.draft !== "object") {
+        throw new Error("提取结果为空")
+      }
       setD((p) => ({
         ...p,
         ...Object.fromEntries(Object.entries(data.draft).filter(([, v]) => v !== undefined && v !== "")),
@@ -95,7 +207,8 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
       }))
       setWarning(data.warning)
       setExtracted(true)
-      toast.success(data.mode === "ai" ? "AI 已整理，请核对黄色提示的内容" : "已用规则初步提取，请核对")
+      setLastSource(data.source ?? (useShots ? "screenshot" : "paste"))
+      toast.success(data.mode === "ai" ? "AI 已整理，请核对黄色区域后确认" : "已用规则初步提取，请核对")
     } catch (e) {
       toast.error(`整理失败：${(e as Error).message}`)
     } finally {
@@ -104,6 +217,12 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
   }
 
   async function save() {
+    if (!editing) {
+      if ((shots.length > 0 || extracted) && !confirmed) {
+        toast.error("请先在黄色区域核对并点「确认无误」")
+        return
+      }
+    }
     if (!d.customer.trim()) {
       toast.error("请填写客户名称")
       return
@@ -114,13 +233,25 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
     }
     setSaving(true)
     try {
-      const body = { ...d, title: d.title.trim() || d.problem.trim().slice(0, 24) }
-      const res = await fetch(
-        initial
-          ? `/api/records/${encodeURIComponent(initial.customer)}/${encodeURIComponent(initial.file.replace(/\.md$/, ""))}`
-          : "/api/records",
-        { method: initial ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
-      )
+      const bodyDraft = { ...d, title: d.title.trim() || d.problem.trim().slice(0, 24) }
+      let res: Response
+      if (initial) {
+        res = await fetch(
+          `/api/records/${encodeURIComponent(initial.customer)}/${encodeURIComponent(initial.file.replace(/\.md$/, ""))}`,
+          { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(bodyDraft) },
+        )
+      } else if (shots.length > 0) {
+        const form = new FormData()
+        form.append("draft", JSON.stringify(bodyDraft))
+        for (const s of shots) form.append("screenshots", s.file, s.file.name)
+        res = await fetch("/api/records", { method: "POST", body: form })
+      } else {
+        res = await fetch("/api/records", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(bodyDraft),
+        })
+      }
       const data = await res.json()
       if (!res.ok) throw new Error(data.error)
       toast.success("已保存到知识库")
@@ -132,13 +263,17 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
     }
   }
 
+  const canSave = editing || confirmed || (!shots.length && !extracted)
+  const saveBlockedReason =
+    !editing && (shots.length > 0 || extracted) && !confirmed ? "需先核对黄区并确认" : null
+
   return (
     <div className="grid gap-6 pb-24 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
       <Card className="h-fit lg:sticky lg:top-8">
         <CardHeader>
-          <CardTitle>① 粘贴聊天记录</CardTitle>
+          <CardTitle>① 上传聊天截图</CardTitle>
           <CardDescription>
-            从微信或飞书多选消息后复制粘贴。原文会完整保存在这条记录里，作为备份。
+            主路径：微信/飞书聊天截图（最多 {MAX_SHOTS} 张，可调序）。未确认前只在浏览器内存，不会写入客户目录。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -164,51 +299,139 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
               <Input id="me" value={me} placeholder="用于区分我方和客户" onChange={(e) => setMe(e.target.value)} />
             </div>
           </div>
-          <Textarea
-            value={d.chat}
-            onChange={(e) => set("chat", e.target.value)}
-            placeholder={"张工 2026-10-28 09:12\n极耳定位又偏了……\n小李 2026-10-28 09:15\n偏多少？有截图吗？"}
-            className="min-h-72 font-mono text-xs leading-relaxed"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={extract} disabled={extracting}>
-              {extracting ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              {extracting ? "整理中…" : extracted ? "重新整理" : "AI 整理"}
-            </Button>
-            {!d.chat && (
-              <Button
-                variant="outline"
-                onClick={() => {
-                  set("chat", SAMPLE_CHAT)
-                  if (!d.customer) set("customer", "宁德某电池厂")
-                  if (!me) setMe("小李")
+
+          {!editing && (
+            <>
+              <div
+                className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-primary/40 bg-primary/5 px-4 py-10 text-center transition hover:bg-primary/10"
+                onClick={() => fileRef.current?.click()}
+                onDragEnter={(e) => {
+                  e.preventDefault()
+                  dragRef.current = true
+                }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  dragRef.current = false
+                  if (e.dataTransfer.files?.length) void addFiles(e.dataTransfer.files)
                 }}
               >
-                <Wand2 />
-                填入示例
-              </Button>
-            )}
-            <span className="text-xs text-muted-foreground">模型：{aiLabel}</span>
+                <ImagePlus className="size-8 text-primary" />
+                <div className="text-sm font-medium">点击或拖拽上传截图</div>
+                <div className="text-xs text-muted-foreground">支持 JPG/PNG/WebP · 最多 {MAX_SHOTS} 张</div>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.length) void addFiles(e.target.files)
+                    e.target.value = ""
+                  }}
+                />
+              </div>
+
+              {shots.length > 0 && (
+                <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+                  {shots.map((s, i) => (
+                    <li key={s.id} className="group relative overflow-hidden rounded-lg border bg-muted/40">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={s.url} alt={`截图 ${i + 1}`} className="aspect-[3/4] w-full object-cover" />
+                      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-0.5 bg-black/55 p-0.5">
+                        <span className="px-1 text-[10px] text-white">{i + 1}</span>
+                        <div className="flex">
+                          <Button type="button" size="icon-xs" variant="ghost" className="text-white hover:bg-white/20" aria-label="上移" disabled={i === 0} onClick={() => moveShot(s.id, -1)}>
+                            <ArrowUp className="size-3" />
+                          </Button>
+                          <Button type="button" size="icon-xs" variant="ghost" className="text-white hover:bg-white/20" aria-label="下移" disabled={i === shots.length - 1} onClick={() => moveShot(s.id, 1)}>
+                            <ArrowDown className="size-3" />
+                          </Button>
+                          <Button type="button" size="icon-xs" variant="ghost" className="text-white hover:bg-white/20" aria-label="删除" onClick={() => removeShot(s.id)}>
+                            <Trash2 className="size-3" />
+                          </Button>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={extract} disabled={extracting || editing}>
+              {extracting ? <Loader2 className="animate-spin" /> : <Sparkles />}
+              {extracting ? "整理中…" : extracted ? "重新整理" : shots.length ? "从截图提取" : "AI 整理"}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowPaste((v) => !v)}>
+              {showPaste ? "收起文字粘贴" : "改用粘贴文字"}
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              截图：{vlLabel ?? "通义 VL"} · 文字：{aiLabel}
+            </span>
           </div>
-          <p className="text-xs text-muted-foreground">
-            没有聊天记录（电话、现场）？直接在右侧填写即可。
-          </p>
+
+          {vlError && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+              <p className="font-medium">截图提取失败</p>
+              <p className="mt-1">{vlError}</p>
+              <p className="mt-2 text-xs">可展开「粘贴文字」走文字提取（DeepSeek），不影响已上传截图在确认保存后的备份。</p>
+            </div>
+          )}
+
+          {(showPaste || editing || (!shots.length && d.chat)) && (
+            <div className="space-y-2 rounded-lg border border-dashed p-3">
+              <Label>文字粘贴（次要）</Label>
+              <Textarea
+                value={d.chat}
+                onChange={(e) => set("chat", e.target.value)}
+                placeholder={"张工 2026-10-28 09:12\n极耳定位又偏了……\n小李 2026-10-28 09:15\n偏多少？有截图吗？"}
+                className="min-h-48 font-mono text-xs leading-relaxed"
+              />
+              {!d.chat && !editing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    set("chat", SAMPLE_CHAT)
+                    if (!d.customer) set("customer", "宁德某电池厂")
+                    if (!me) setMe("小李")
+                    setShowPaste(true)
+                  }}
+                >
+                  <Wand2 />
+                  填入示例
+                </Button>
+              )}
+            </div>
+          )}
+
+          <p className="text-xs text-muted-foreground">没有聊天记录（电话、现场）？可直接在右侧填写后保存。</p>
         </CardContent>
       </Card>
 
       <div className="space-y-6">
-        {(warning || d.uncertain.length > 0) && (
+        {extracted && (
           <Card className="border-amber-300 bg-amber-50/60 ring-amber-200">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-amber-900">
                 <AlertTriangle className="size-4" />
-                需要你核对的地方
+                需要你核对的地方（不可跳过）
               </CardTitle>
               <CardDescription className="text-amber-800/80">
-                AI 不确定的点都列在这里。核对后点 ✓ 移除；保留的会存进记录的「待确认」。
+                AI 草稿仅供参考。请对照截图/原文改右侧字段；确认后才能保存。来源：{lastSource === "screenshot" ? "截图 VL" : lastSource === "paste" ? "文字" : "—"}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-2">
+            <CardContent className="space-y-3">
+              {shots.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {shots.map((s, i) => (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img key={s.id} src={s.url} alt={`核对图 ${i + 1}`} className="h-24 w-auto rounded border object-cover" />
+                  ))}
+                </div>
+              )}
               {warning && <p className="text-sm text-amber-900">{warning}</p>}
               {d.uncertain.map((u, i) => (
                 <div key={i} className="flex items-start gap-2 rounded-lg bg-background/70 p-2 text-sm">
@@ -223,6 +446,20 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
                   </Button>
                 </div>
               ))}
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant={confirmed ? "secondary" : "default"}
+                  onClick={() => setConfirmed(true)}
+                  disabled={confirmed}
+                >
+                  <Check />
+                  {confirmed ? "已确认" : "确认无误，可以保存"}
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => setShowPaste(true)}>
+                  改用粘贴文字
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -235,37 +472,37 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
           <CardContent className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="title">标题</Label>
-              <Input id="title" value={d.title} onChange={(e) => set("title", e.target.value)} placeholder="一句话说清问题" />
+              <Input id="title" value={d.title} onChange={(e) => { set("title", e.target.value); setConfirmed(false) }} placeholder="一句话说清问题" />
             </div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <Field label="日期">
-                <Input type="date" value={d.date} onChange={(e) => set("date", e.target.value)} />
+                <Input type="date" value={d.date} onChange={(e) => { set("date", e.target.value); setConfirmed(false) }} />
               </Field>
               <Field label="联系人">
-                <Input value={d.contact} onChange={(e) => set("contact", e.target.value)} />
+                <Input value={d.contact} onChange={(e) => { set("contact", e.target.value); setConfirmed(false) }} />
               </Field>
               <Field label="渠道">
-                <select className={selectClass} value={d.channel} onChange={(e) => set("channel", e.target.value as RecordDraft["channel"])}>
+                <select className={selectClass} value={d.channel} onChange={(e) => { set("channel", e.target.value as RecordDraft["channel"]); setConfirmed(false) }}>
                   {CHANNELS.map((c) => (
                     <option key={c}>{c}</option>
                   ))}
                 </select>
               </Field>
               <Field label="状态">
-                <select className={selectClass} value={d.status} onChange={(e) => set("status", e.target.value as RecordDraft["status"])}>
+                <select className={selectClass} value={d.status} onChange={(e) => { set("status", e.target.value as RecordDraft["status"]); setConfirmed(false) }}>
                   {STATUSES.map((c) => (
                     <option key={c}>{c}</option>
                   ))}
                 </select>
               </Field>
               <Field label="产品/版本">
-                <Input value={d.product} onChange={(e) => set("product", e.target.value)} placeholder="如 VisionMaster 4.3" />
+                <Input value={d.product} onChange={(e) => { set("product", e.target.value); setConfirmed(false) }} placeholder="如 VisionMaster 4.3" />
               </Field>
               <Field label="模块">
-                <Input value={d.module} onChange={(e) => set("module", e.target.value)} placeholder="定位 / 标定 / 测量…" />
+                <Input value={d.module} onChange={(e) => { set("module", e.target.value); setConfirmed(false) }} placeholder="定位 / 标定 / 测量…" />
               </Field>
               <Field label="问题分类" className="sm:col-span-2">
-                <select className={selectClass} value={d.category} onChange={(e) => set("category", e.target.value)}>
+                <select className={selectClass} value={d.category} onChange={(e) => { set("category", e.target.value); setConfirmed(false) }}>
                   {[...new Set([...CATEGORIES, d.category])].map((c) => (
                     <option key={c}>{c}</option>
                   ))}
@@ -273,13 +510,13 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
               </Field>
             </div>
             <Field label="问题描述">
-              <Textarea value={d.problem} onChange={(e) => set("problem", e.target.value)} className="min-h-20" />
+              <Textarea value={d.problem} onChange={(e) => { set("problem", e.target.value); setConfirmed(false) }} className="min-h-20" />
             </Field>
             <Field label="处理过程">
-              <Textarea value={d.process} onChange={(e) => set("process", e.target.value)} className="min-h-24" />
+              <Textarea value={d.process} onChange={(e) => { set("process", e.target.value); setConfirmed(false) }} className="min-h-24" />
             </Field>
             <Field label="解决方案 / 当前结论">
-              <Textarea value={d.solution} onChange={(e) => set("solution", e.target.value)} className="min-h-20" />
+              <Textarea value={d.solution} onChange={(e) => { set("solution", e.target.value); setConfirmed(false) }} className="min-h-20" />
             </Field>
           </CardContent>
         </Card>
@@ -324,17 +561,17 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
               <div key={i} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-[1fr_1fr_8rem_auto]">
                 <Textarea
                   value={n.pain}
-                  onChange={(e) => setNeed(i, { pain: e.target.value })}
+                  onChange={(e) => { setNeed(i, { pain: e.target.value }); setConfirmed(false) }}
                   placeholder="痛点"
                   className="min-h-14"
                 />
                 <Textarea
                   value={n.idea}
-                  onChange={(e) => setNeed(i, { idea: e.target.value })}
+                  onChange={(e) => { setNeed(i, { idea: e.target.value }); setConfirmed(false) }}
                   placeholder="改进/工具想法"
                   className="min-h-14"
                 />
-                <select className={selectClass} value={n.type} onChange={(e) => setNeed(i, { type: e.target.value as Need["type"] })}>
+                <select className={selectClass} value={n.type} onChange={(e) => { setNeed(i, { type: e.target.value as Need["type"] }); setConfirmed(false) }}>
                   {NEED_TYPES.map((t) => (
                     <option key={t}>{t}</option>
                   ))}
@@ -343,7 +580,7 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
                   variant="ghost"
                   size="icon-sm"
                   aria-label="删除"
-                  onClick={() => set("needs", d.needs.filter((_, j) => j !== i))}
+                  onClick={() => { set("needs", d.needs.filter((_, j) => j !== i)); setConfirmed(false) }}
                 >
                   <Trash2 />
                 </Button>
@@ -361,8 +598,10 @@ export function RecordForm({ customers, aiLabel, initial, defaultCustomer }: Pro
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:px-8">
           <span className="truncate text-xs text-muted-foreground">
             保存为 Markdown：customers/{d.customer || "<客户>"}/records/
+            {shots.length > 0 ? ` + files/截图-日期-1..${shots.length}.jpg` : ""}
+            {saveBlockedReason ? ` · ${saveBlockedReason}` : ""}
           </span>
-          <Button onClick={save} disabled={saving}>
+          <Button onClick={save} disabled={saving || !canSave}>
             {saving ? <Loader2 className="animate-spin" /> : <Save />}
             {editing ? "保存修改" : "保存记录"}
           </Button>

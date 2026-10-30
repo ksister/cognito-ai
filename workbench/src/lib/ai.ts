@@ -79,6 +79,7 @@ export async function extractRecord(
       mode: "rules",
       draft: rulesExtract(chat, opts.me),
       warning: "未配置 AI_API_KEY，已用规则做初步提取，请重点核对问题描述和解决方案。",
+      source: "paste",
     }
   }
   try {
@@ -91,12 +92,13 @@ export async function extractRecord(
       .filter(Boolean)
       .join("\n\n")
     const draft = await chatJson<Partial<RecordDraft>>(EXTRACT_SYSTEM, user)
-    return { mode: "ai", draft: normalizeDraft(draft) }
+    return { mode: "ai", draft: normalizeDraft(draft), source: "paste" }
   } catch (e) {
     return {
       mode: "rules",
       draft: rulesExtract(chat, opts.me),
       warning: `AI 调用失败（${(e as Error).message}），已改用规则提取。`,
+      source: "paste",
     }
   }
 }
