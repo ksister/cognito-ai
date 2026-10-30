@@ -170,5 +170,8 @@
       "extract": true,
       "ai": "「痛点 → 想法」，多条用分号分隔"
     }
-  ]
+  ],
+  "people": {
+    "fieldName": "处理人"
+  }
 }

@@ -129,6 +129,7 @@ const COLUMN_PROPS = [
   "aliases",
   "aiSkip",
   "suggestions",
+  "feishuName",
 ] as const
 
 export type FeishuColumn = {
@@ -164,6 +165,16 @@ export type FeishuColumn = {
   aiSkip?: string[]
   /** Preferred site names offered before historical values. */
   suggestions?: string[]
+  /** Feishu column title when it differs from `name` (for example 字段1). Only in the private config. */
+  feishuName?: string
+}
+
+/** Person column is not in the 20-column paste view. Real open_id stays in the private config. */
+export type FeishuPeople = {
+  fieldName?: string
+  fieldId?: string
+  /** Logged-in user's open_id (ou_…). Empty until the user fills or syncs it locally. */
+  defaultOpenId?: string
 }
 
 export type FeishuTableSchema = {
@@ -171,6 +182,7 @@ export type FeishuTableSchema = {
   /** Join multi-select values when pasting. Change this if the test table expects another separator. */
   multiSeparator: string
   columns: FeishuColumn[]
+  people?: FeishuPeople
 }
 
 export type FeishuSchemaState =
@@ -220,8 +232,21 @@ export function parseFeishuTableSchema(raw: unknown, filePath = "feishu-table.js
     } else multiSeparator = obj.multiSeparator
   }
   for (const k of Object.keys(obj)) {
-    if (k !== "version" && k !== "columns" && k !== "multiSeparator") {
-      errors.push(`根属性「${k}」无法识别，只能是 version、columns、multiSeparator`)
+    if (k !== "version" && k !== "columns" && k !== "multiSeparator" && k !== "people") {
+      errors.push(`根属性「${k}」无法识别，只能是 version、columns、multiSeparator、people`)
+    }
+  }
+  let people: FeishuPeople | undefined
+  if (obj.people != null) {
+    if (!obj.people || typeof obj.people !== "object" || Array.isArray(obj.people)) {
+      errors.push("people 必须是对象（fieldName、fieldId、defaultOpenId）")
+    } else {
+      const p = obj.people as Record<string, unknown>
+      people = {}
+      if (typeof p.fieldName === "string" && p.fieldName.trim()) people.fieldName = p.fieldName.trim()
+      if (typeof p.fieldId === "string" && p.fieldId.trim()) people.fieldId = p.fieldId.trim()
+      if (typeof p.defaultOpenId === "string" && p.defaultOpenId.trim()) people.defaultOpenId = p.defaultOpenId.trim()
+      if (!people.fieldName && !people.fieldId && !people.defaultOpenId) people = undefined
     }
   }
   if (obj.version !== 1) errors.push("version 必须是 1")
@@ -447,6 +472,12 @@ export function parseFeishuTableSchema(raw: unknown, filePath = "feishu-table.js
       } else appendOriginalTo = row.appendOriginalTo
     }
 
+    let feishuName: string | undefined
+    if (row.feishuName != null && row.feishuName !== "") {
+      if (typeof row.feishuName !== "string") errors.push(`${at} feishuName 必须是字符串`)
+      else feishuName = row.feishuName.trim()
+    }
+
     if (!type || !name) return
     columns.push({
       name,
@@ -468,6 +499,7 @@ export function parseFeishuTableSchema(raw: unknown, filePath = "feishu-table.js
       ...(aliases && Object.keys(aliases).length ? { aliases } : {}),
       ...(aiSkip?.length ? { aiSkip } : {}),
       ...(suggestions?.length ? { suggestions } : {}),
+      ...(feishuName ? { feishuName } : {}),
     })
   })
 
@@ -477,7 +509,7 @@ export function parseFeishuTableSchema(raw: unknown, filePath = "feishu-table.js
     throw new FeishuSchemaError(`飞书表结构配置无效（${filePath}）：${shown}${more}`)
   }
 
-  return { version: 1, multiSeparator, columns }
+  return { version: 1, multiSeparator, columns, ...(people ? { people } : {}) }
 }
 
 export function isRecordTextKey(key: string): key is RecordTextKey {
@@ -701,6 +733,13 @@ export function pasteWarnings(schema: FeishuTableSchema, record: FieldSource): s
   return warnings
 }
 
+function resolveHandlerOpenIds(schema: FeishuTableSchema, handlerOpenIds: string[] | undefined): string[] {
+  const picked = (handlerOpenIds ?? []).map((id) => id.trim()).filter((id) => id.startsWith("ou_"))
+  if (picked.length) return picked
+  const fallback = schema.people?.defaultOpenId?.trim() ?? ""
+  return fallback.startsWith("ou_") ? [fallback] : []
+}
+
 export function schemaHasWritableFieldId(schema: FeishuTableSchema): boolean {
   return schema.columns.some((c) => Boolean(c.fieldId) && c.type !== "attachment")
 }
@@ -724,7 +763,7 @@ export function buildCreateFields(
     if (col.type === "attachment" || !col.fieldId) continue
 
     if (col.type === "person") {
-      const ids = (handlerOpenIds ?? []).map((id) => id.trim()).filter((id) => id.startsWith("ou_"))
+      const ids = resolveHandlerOpenIds(schema, handlerOpenIds)
       if (ids.length) fields[col.fieldId] = ids.map((id) => ({ id }))
       continue
     }
@@ -760,8 +799,28 @@ export function buildCreateFields(
       continue
     }
 
+    if (col.type === "date") {
+      const ms = Date.parse(`${value.slice(0, 10)}T00:00:00`)
+      if (!Number.isNaN(ms)) fields[col.fieldId] = ms
+      else if (value) warnings.push(`「${col.name}」不是 YYYY-MM-DD，已跳过`)
+      continue
+    }
+
     const pasted = columnPasteValue(schema, col, draft)
     if (pasted) fields[col.fieldId] = pasted
+  }
+
+  const personCol = schema.columns.find((c) => c.type === "person" && c.fieldId)
+  const peopleId = schema.people?.fieldId
+  if (peopleId && peopleId !== personCol?.fieldId) {
+    const ids = resolveHandlerOpenIds(schema, handlerOpenIds)
+    if (ids.length) fields[peopleId] = ids.map((id) => ({ id }))
+    else warnings.push("处理人未写入：请在私有配置 people.defaultOpenId 填写本人的 open_id（ou_…）")
+  }
+
+  const missingId = schema.columns.filter((c) => c.type !== "attachment" && c.type !== "person" && !c.fieldId)
+  if (missingId.length) {
+    warnings.push(`有 ${missingId.length} 列没有 fieldId，cli 未写入：${missingId.map((c) => c.name).join("、")}。用「从飞书同步字段」或手填，不要提交真实 id。`)
   }
 
   for (const append of appends) {
@@ -1090,6 +1149,30 @@ export function diffColumnOptions(
   return { changes, unchanged, missingInFeishu, missingInConfig }
 }
 
+export type FieldIdChange = { name: string; before: string; after: string }
+
+const FEISHU_PERSON_TYPE = 11
+
+export function diffFieldIds(
+  schema: FeishuTableSchema,
+  fields: { name: string; fieldId: string; type?: number }[],
+): { columns: FieldIdChange[]; people: FieldIdChange | null } {
+  const byName = new Map(fields.filter((f) => f.fieldId).map((f) => [f.name, f]))
+  const columns: FieldIdChange[] = []
+  for (const col of schema.columns) {
+    const hit = byName.get(col.feishuName || col.name)
+    if (!hit || hit.fieldId === col.fieldId) continue
+    columns.push({ name: col.name, before: col.fieldId ?? "", after: hit.fieldId })
+  }
+  const wanted = schema.people?.fieldName || "处理人"
+  const person = fields.find((f) => f.type === FEISHU_PERSON_TYPE && f.name === wanted) || fields.find((f) => f.name === wanted)
+  const people =
+    person && person.fieldId !== schema.people?.fieldId
+      ? { name: person.name, before: schema.people?.fieldId ?? "", after: person.fieldId }
+      : null
+  return { columns, people }
+}
+
 /** Replace options on columns named in the diff. Leaves every other property untouched. */
 export function applyOptionDiff(raw: unknown, changes: OptionDiff[]): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw
@@ -1105,4 +1188,27 @@ export function applyOptionDiff(raw: unknown, changes: OptionDiff[]): unknown {
       return { ...(col as Record<string, unknown>), options: byName.get(name) }
     }),
   }
+}
+
+/** Write field ids onto matching columns and people. Does not change defaultOpenId. */
+export function applyFieldIds(
+  raw: unknown,
+  columns: FieldIdChange[],
+  people: FieldIdChange | null,
+): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw
+  const root = raw as { columns?: unknown; people?: Record<string, unknown> }
+  const byName = new Map(columns.map((c) => [c.name, c.after]))
+  const nextColumns = Array.isArray(root.columns)
+    ? root.columns.map((col) => {
+        if (!col || typeof col !== "object" || Array.isArray(col)) return col
+        const name = (col as { name?: unknown }).name
+        if (typeof name !== "string" || !byName.has(name)) return col
+        return { ...(col as Record<string, unknown>), fieldId: byName.get(name) }
+      })
+    : root.columns
+  const nextPeople = people
+    ? { ...(root.people ?? {}), fieldName: people.name, fieldId: people.after }
+    : root.people
+  return { ...root, columns: nextColumns, ...(nextPeople ? { people: nextPeople } : {}) }
 }

@@ -2,12 +2,15 @@ import "server-only"
 import fs from "node:fs/promises"
 import path from "node:path"
 import {
+  applyFieldIds,
   applyOptionDiff,
   diffColumnOptions,
+  diffFieldIds,
   FeishuSchemaError,
   schemaFromJsonText,
   type FeishuSchemaState,
   type FeishuTableSchema,
+  type FieldIdChange,
   type OptionSyncPreview,
 } from "./feishu-schema"
 
@@ -54,25 +57,41 @@ export async function readFeishuTableSchema(kbRoot = resolveKbRoot()): Promise<F
   return state.schema
 }
 
-export async function previewFeishuOptionSync(
-  fields: { name: string; options: string[] }[],
-  kbRoot = resolveKbRoot(),
-): Promise<OptionSyncPreview & { path: string }> {
-  const schema = await readFeishuTableSchema(kbRoot)
-  return { ...diffColumnOptions(schema, fields), path: feishuTableConfigPath(kbRoot) }
+type ListedField = { name: string; fieldId?: string; options: string[]; type?: number }
+
+export type FeishuSyncPreview = OptionSyncPreview & {
+  path: string
+  fieldIds: FieldIdChange[]
+  peopleField: FieldIdChange | null
 }
 
-/** Write only `options` for columns whose names match the preview. */
-export async function writeFeishuOptionSync(
-  fields: { name: string; options: string[] }[],
+export async function previewFeishuOptionSync(
+  fields: ListedField[],
   kbRoot = resolveKbRoot(),
-): Promise<OptionSyncPreview & { path: string }> {
-  const filePath = feishuTableConfigPath(kbRoot)
+): Promise<FeishuSyncPreview> {
   const schema = await readFeishuTableSchema(kbRoot)
-  const preview = diffColumnOptions(schema, fields)
-  if (!preview.changes.length) return { ...preview, path: filePath }
-  const raw = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown
-  const next = applyOptionDiff(raw, preview.changes)
-  await fs.writeFile(filePath, JSON.stringify(next, null, 2) + "\n", "utf8")
-  return { ...preview, path: filePath }
+  const ids = diffFieldIds(
+    schema,
+    fields.filter((f): f is ListedField & { fieldId: string } => Boolean(f.fieldId)),
+  )
+  return {
+    ...diffColumnOptions(schema, fields),
+    path: feishuTableConfigPath(kbRoot),
+    fieldIds: ids.columns,
+    peopleField: ids.people,
+  }
+}
+
+/** Write options and field ids only. Leaves AI rules and defaultOpenId alone. */
+export async function writeFeishuOptionSync(
+  fields: ListedField[],
+  kbRoot = resolveKbRoot(),
+): Promise<FeishuSyncPreview> {
+  const preview = await previewFeishuOptionSync(fields, kbRoot)
+  if (!preview.changes.length && !preview.fieldIds.length && !preview.peopleField) return preview
+  const raw = JSON.parse(await fs.readFile(preview.path, "utf8")) as unknown
+  const withOptions = applyOptionDiff(raw, preview.changes)
+  const next = applyFieldIds(withOptions, preview.fieldIds, preview.peopleField)
+  await fs.writeFile(preview.path, JSON.stringify(next, null, 2) + "\n", "utf8")
+  return preview
 }

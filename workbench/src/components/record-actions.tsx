@@ -7,7 +7,7 @@ import { Check, ClipboardCopy, Download, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { selectClass } from "@/components/bits"
 import { CopyFallback } from "@/components/copy-fallback"
-import { CopyTextError, copyWhenReady } from "@/lib/copy-text"
+import { copyFetchedText } from "@/lib/copy-text"
 import type { FeishuSchemaState } from "@/lib/feishu-schema"
 import { STATUSES, type Status, type SupportRecord } from "@/lib/types"
 
@@ -70,6 +70,33 @@ export function StatusSelect({ record, statusOptions }: { record: SupportRecord;
   )
 }
 
+function startRowCopy(
+  ids: string[],
+  onOk: (payload: ClipPayload) => void,
+  onFail: (kind: "api" | "clipboard", message: string, text?: string) => void,
+) {
+  const box: { payload?: ClipPayload } = {}
+  const { write, text } = copyFetchedText(async () => {
+    const payload = await fetchClipboard(ids)
+    box.payload = payload
+    return payload.text
+  })
+  const showForManualCopy = (message: string) => {
+    void text
+      .then((value) => onFail("clipboard", message, value))
+      .catch((e: unknown) => onFail("api", (e as Error).message))
+  }
+  if (!write) {
+    showForManualCopy("当前浏览器不支持 ClipboardItem。下方文本已全选，请按 Ctrl 或 Cmd + C")
+    return
+  }
+  void write
+    .then(() => {
+      if (box.payload) onOk(box.payload)
+    })
+    .catch((e: unknown) => showForManualCopy((e as Error).message || "ClipboardItem 写入失败"))
+}
+
 export function CopyFeishuButton({ record, schemaState }: { record: SupportRecord; schemaState: FeishuSchemaState }) {
   const router = useRouter()
   const [fallback, setFallback] = useState<string | null>(null)
@@ -83,33 +110,26 @@ export function CopyFeishuButton({ record, schemaState }: { record: SupportRecor
             return
           }
           setFallback(null)
-          let payload: ClipPayload | null = null
-          const job = copyWhenReady(async () => {
-            payload = await fetchClipboard([record.id])
-            return payload.text
-          })
-          void job
-            .then(async () => {
-              if (!payload) return
+          startRowCopy(
+            [record.id],
+            (payload) => {
               for (const w of payload.warnings ?? []) toast.message(w)
               for (const id of payload.already ?? []) toast.message(`本地记录ID ${id} 已粘贴过，请在飞书搜索该 ID，不要新建一行`)
-              const marked = await fetch("/api/records/mark-synced", {
+              void fetch("/api/records/mark-synced", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ ids: [record.id] }),
+              }).then((marked) => {
+                if (!marked.ok) toast.message("已复制，但标记已同步失败，可稍后在首页再标")
               })
-              if (!marked.ok) toast.message("已复制，但标记已同步失败，可稍后在首页再标")
               toast.success("已复制到剪贴板。到飞书「工作台粘贴」视图，选中一行的第一个单元格粘贴")
               router.refresh()
-            })
-            .catch((e: unknown) => {
-              if (e instanceof CopyTextError) {
-                if (e.text) setFallback(e.text)
-                toast.error(`没有复制到剪贴板。${e.message}`)
-                return
-              }
-              toast.error(`没有复制：接口失败。${(e as Error).message}`)
-            })
+            },
+            (kind, message, value) => {
+              if (kind === "clipboard" && value) setFallback(value)
+              toast.error(kind === "api" ? `没有复制：接口失败。${message}` : `没有复制到剪贴板。${message}`)
+            },
+          )
         }}
       >
         <ClipboardCopy />
@@ -154,28 +174,20 @@ export function SyncPanel({ records, schemaState }: { records: SupportRecord[]; 
               return
             }
             setFallback(null)
-            let payload: ClipPayload | null = null
-            const job = copyWhenReady(async () => {
-              payload = await fetchClipboard(sorted.map((r) => r.id))
-              return payload.text
-            })
-            void job
-              .then(() => {
-                if (!payload) return
+            startRowCopy(
+              sorted.map((r) => r.id),
+              (payload) => {
                 for (const w of payload.warnings ?? []) toast.message(w)
                 for (const id of payload.already ?? []) toast.message(`本地记录ID ${id} 已粘贴过，请在飞书搜索该 ID，不要新建一行`)
                 setCopied(true)
                 toast.success(`已复制 ${records.length} 行到剪贴板。粘贴后点「标记为已同步」`)
-              })
-              .catch((e: unknown) => {
+              },
+              (kind, message, value) => {
                 setCopied(false)
-                if (e instanceof CopyTextError) {
-                  if (e.text) setFallback(e.text)
-                  toast.error(`没有复制到剪贴板。${e.message}`)
-                  return
-                }
-                toast.error(`没有复制：接口失败。${(e as Error).message}`)
-              })
+                if (kind === "clipboard" && value) setFallback(value)
+                toast.error(kind === "api" ? `没有复制：接口失败。${message}` : `没有复制到剪贴板。${message}`)
+              },
+            )
           }}
         >
           <ClipboardCopy />

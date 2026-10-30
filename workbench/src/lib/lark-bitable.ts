@@ -391,9 +391,9 @@ async function fetchFieldMetaViaCli(cliPath: string, cfg: LarkCfg): Promise<Fiel
   return extractFieldItems(run.json)
 }
 
-/** Field names and select options from lark-cli. Used only to refresh config options. */
+/** Field names, ids, and select options from lark-cli. Ids stay in the private config. */
 export async function listFeishuFieldOptions(): Promise<
-  { ok: true; fields: { name: string; options: string[] }[] } | { ok: false; error: string }
+  { ok: true; fields: { name: string; fieldId: string; options: string[]; type: number }[] } | { ok: false; error: string }
 > {
   const cfg = readCfg()
   const missing = missingLarkTarget(cfg)
@@ -409,6 +409,8 @@ export async function listFeishuFieldOptions(): Promise<
       ok: true,
       fields: fields.map((f) => ({
         name: f.field_name,
+        fieldId: f.field_id,
+        type: f.type,
         options: (f.property?.options ?? []).map((o) => o.name).filter(Boolean),
       })),
     }
@@ -540,7 +542,7 @@ function optionsFromFields(fields: FieldMeta[]): LarkSelectOptions {
 export { buildCreateFields } from "./feishu-schema"
 
 const NO_FIELD_ID_MESSAGE =
-  "飞书表结构配置里没有可写入的 fieldId。本地记录已保留。请用「复制为飞书行」；cli/api 建行需要在私有 feishu-table.json 里填写 fieldId（不要提交到仓库）。"
+  "飞书表结构配置里没有可写入的 fieldId，cli 无法建行。请在记一笔页点「从飞书同步字段」确认后写入私有 feishu-table.json，或按列名手填 fieldId。真实 id 不要提交。复制为飞书行仍可作兜底。"
 
 function missingWritableFieldId(schema: FeishuTableSchema): string | null {
   return schemaHasWritableFieldId(schema) ? null : NO_FIELD_ID_MESSAGE

@@ -948,6 +948,8 @@ function SyncOptionsButton() {
   const [preview, setPreview] = useState<{
     applied?: boolean
     changes: { name: string; added: string[]; removed: string[] }[]
+    fieldIds?: { name: string; before: string; after: string }[]
+    peopleField?: { name: string; before: string; after: string } | null
     missingInFeishu: string[]
     missingInConfig: string[]
     path: string
@@ -964,7 +966,10 @@ function SyncOptionsButton() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "同步失败")
       setPreview(data)
-      if (apply) toast.success(data.changes?.length ? `已更新 ${data.changes.length} 列的选项` : "选项没有变化")
+      if (apply) {
+        const n = (data.changes?.length ?? 0) + (data.fieldIds?.length ?? 0) + (data.peopleField ? 1 : 0)
+        toast.success(n ? `已写入私有配置（${n} 处选项或 fieldId）` : "没有变化")
+      }
     } catch (e) {
       toast.error((e as Error).message)
     } finally {
@@ -976,22 +981,33 @@ function SyncOptionsButton() {
     <div className="space-y-2">
       <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void run(false)}>
         {busy ? <Loader2 className="animate-spin" /> : null}
-        从飞书同步选项
+        从飞书同步字段
       </Button>
       {preview && !preview.applied && (
         <div className="space-y-2 rounded-md border bg-background p-2 text-xs">
-          <p>只改选项，不改列名、key 或 AI 规则。写入前请确认差异。文件：{preview.path}</p>
-          {preview.changes.length === 0 && <p>没有选项变化。</p>}
+          <p>只改选项和 fieldId，不改列名或 AI 规则。确认后写入私有配置，不会进 git。文件：{preview.path}</p>
+          <p>人员 open_id 不从这里写入。请在同一文件的 people.defaultOpenId 手填本人的 ou_…。</p>
+          {preview.changes.length === 0 && (preview.fieldIds?.length ?? 0) === 0 && !preview.peopleField && <p>没有变化。</p>}
           {preview.changes.map((c) => (
             <p key={c.name}>
-              {c.name}：新增 {c.added.join("、") || "无"}；去掉 {c.removed.join("、") || "无"}
+              {c.name} 选项：新增 {c.added.join("、") || "无"}；去掉 {c.removed.join("、") || "无"}
             </p>
           ))}
+          {(preview.fieldIds ?? []).map((c) => (
+            <p key={`id-${c.name}`}>
+              {c.name} fieldId：{c.before || "（空）"} → {c.after}
+            </p>
+          ))}
+          {preview.peopleField && (
+            <p>
+              处理人 fieldId：{preview.peopleField.before || "（空）"} → {preview.peopleField.after}
+            </p>
+          )}
           {preview.missingInFeishu.length > 0 && <p>配置里有、飞书没有：{preview.missingInFeishu.join("、")}</p>}
           {preview.missingInConfig.length > 0 && <p>飞书有选项、配置里没有同名列：{preview.missingInConfig.join("、")}</p>}
-          {preview.changes.length > 0 && (
+          {(preview.changes.length > 0 || (preview.fieldIds?.length ?? 0) > 0 || preview.peopleField) && (
             <Button type="button" size="sm" disabled={busy} onClick={() => void run(true)}>
-              确认写入选项
+              确认写入
             </Button>
           )}
         </div>
