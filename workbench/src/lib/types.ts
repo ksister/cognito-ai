@@ -40,6 +40,8 @@ export type RecordDraft = {
   needs: Need[]
   uncertain: string[]
   chat: string
+  /** Screenshot filenames under customers/<客户>/files/. Empty on records saved before T3. */
+  screenshots: string[]
 }
 
 export type SupportRecord = RecordDraft & {
@@ -128,5 +130,6 @@ export function emptyDraft(customer = ""): RecordDraft {
     needs: [],
     uncertain: [],
     chat: "",
+    screenshots: [],
   }
 }

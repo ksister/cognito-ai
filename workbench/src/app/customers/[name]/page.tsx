@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { EmptyState, PageHeader, StatusBadge, recordHref } from "@/components/bits"
 import { CopyContextButton, FilesPanel, ProfileEditor } from "@/components/customer-panels"
+import { ShotThumbs } from "@/components/shot-thumbs"
 import { getProfile, listCustomerNames, listFiles, listRecords } from "@/lib/kb"
 import { OPEN_STATUSES, type CustomerProfile, type SupportRecord } from "@/lib/types"
 
@@ -42,6 +43,8 @@ export default async function CustomerPage({ params }: PageProps<"/customers/[na
   if (!(await listCustomerNames()).includes(name)) notFound()
   const [profile, records, files] = await Promise.all([getProfile(name), listRecords(name), listFiles(name)])
   const timeline = [...records].sort((a, b) => (a.date + a.created).localeCompare(b.date + b.created))
+  const linked = new Set(records.flatMap((r) => r.screenshots))
+  const unlinked = files.filter((f) => !linked.has(f.name))
   const open = records.filter((r) => OPEN_STATUSES.includes(r.status)).length
   const modules = Object.entries(
     records.reduce<Record<string, number>>((m, r) => ((m[r.module || "未标注"] = (m[r.module || "未标注"] ?? 0) + 1), m), {}),
@@ -104,6 +107,7 @@ export default async function CustomerPage({ params }: PageProps<"/customers/[na
                       <Link href={recordHref(r)} className="block font-medium hover:text-primary">
                         {r.title}
                       </Link>
+                      {r.screenshots.length > 0 && <ShotThumbs customer={name} names={r.screenshots} size="sm" />}
                       {r.problem && <p className="line-clamp-2 text-sm text-muted-foreground">{r.problem}</p>}
                       {r.solution && (
                         <p className="line-clamp-2 text-sm">
@@ -163,10 +167,14 @@ export default async function CustomerPage({ params }: PageProps<"/customers/[na
           )}
           <Card>
             <CardHeader>
-              <CardTitle>资料</CardTitle>
+              <CardTitle>未关联资料</CardTitle>
             </CardHeader>
             <CardContent>
-              <FilesPanel customer={name} files={files} />
+              <FilesPanel
+                customer={name}
+                files={unlinked}
+                empty="没有未关联的资料。记录里的截图显示在时间线上；其它文件可拖到这里，不会被删除。"
+              />
             </CardContent>
           </Card>
         </div>

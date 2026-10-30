@@ -96,7 +96,15 @@ export function ProfileEditor({ profile }: { profile: CustomerProfile }) {
   )
 }
 
-export function FilesPanel({ customer, files }: { customer: string; files: { name: string; size: number; mtime: string }[] }) {
+export function FilesPanel({
+  customer,
+  files,
+  empty = "图纸、现场图片、日志、方案文档都可以拖到这里。",
+}: {
+  customer: string
+  files: { name: string; size: number; mtime: string }[]
+  empty?: string
+}) {
   const router = useRouter()
   const input = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -124,7 +132,7 @@ export function FilesPanel({ customer, files }: { customer: string; files: { nam
       }}
     >
       {files.length === 0 ? (
-        <p className="text-sm text-muted-foreground">图纸、现场图片、日志、方案文档都可以拖到这里。</p>
+        <p className="text-sm text-muted-foreground">{empty}</p>
       ) : (
         <ul className="space-y-1.5">
           {files.map((f) => (
