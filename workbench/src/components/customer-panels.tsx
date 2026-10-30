@@ -4,7 +4,9 @@ import { useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Bot, FileText, Loader2, Pencil, Upload } from "lucide-react"
+import { CopyFallback } from "@/components/copy-fallback"
 import { Button } from "@/components/ui/button"
+import { CopyTextError, copyText } from "@/lib/copy-text"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
@@ -160,20 +162,33 @@ export function FilesPanel({
 }
 
 export function CopyContextButton({ text }: { text: string }) {
+  const [fallback, setFallback] = useState<string | null>(null)
   return (
+    <div className="flex flex-col items-stretch gap-2">
     <Button
       variant="outline"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text)
-          toast.success("已复制该客户的完整资料，可以粘贴给任意 AI 让它总结或分析")
-        } catch {
-          toast.error("复制失败，请检查剪贴板权限")
+      onClick={() => {
+        setFallback(null)
+        if (!text) {
+          toast.error("没有复制：内容是空的")
+          return
         }
+        void copyText(text)
+          .then(() => toast.success("已复制该客户的完整资料，可以粘贴给任意 AI 让它总结或分析"))
+          .catch((e: unknown) => {
+            if (e instanceof CopyTextError) {
+              if (e.text) setFallback(e.text)
+              toast.error(`没有复制到剪贴板。${e.message}`)
+              return
+            }
+            toast.error(`没有复制到剪贴板。${(e as Error).message}`)
+          })
       }}
     >
       <Bot />
       复制给 AI
     </Button>
+    {fallback && <CopyFallback text={fallback} />}
+    </div>
   )
 }

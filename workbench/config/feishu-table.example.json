@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "multiSeparator": ",",
+  "columns": [
+    {
+      "name": "问题名称",
+      "type": "text",
+      "key": "title",
+      "extract": true,
+      "ai": "现象 + 对象，不超过 20 字；重名加括号区分"
+    },
+    {
+      "name": "创建时间",
+      "type": "date",
+      "key": "date",
+      "extract": true,
+      "ai": "问题发生日期，不是录入日期"
+    },
+    {
+      "name": "客户公司1",
+      "type": "select",
+      "key": "customer",
+      "extract": true,
+      "options": ["示例-星河电子", "示例-云岚包装", "内部-工程部", "其他-待确认", "其他-渠道"],
+      "aliases": { "示例星河": "示例-星河电子" },
+      "aiSkip": ["其他-待确认", "其他-渠道"],
+      "ai": "填直接对接的公司；按 aliases 匹配，不按音近合并；内部问题选「内部-工程部」；未命中留空。aiSkip 里的选项不能由 AI 自动选。示例公司名是虚构的"
+    },
+    {
+      "name": "客户/联系人",
+      "type": "text",
+      "key": "contact",
+      "extract": true,
+      "ai": "客户方发言人，多人用顿号分隔"
+    },
+    {
+      "name": "项目/现场",
+      "type": "text",
+      "key": "site",
+      "extract": true,
+      "suggestions": ["示例-星河电子-一号线"],
+      "ai": "格式「客户-现场或项目」；表单按 suggestions 和历史值自动补全。示例是虚构的"
+    },
+    {
+      "name": "支持类型",
+      "type": "select",
+      "key": "support_type",
+      "extract": true,
+      "options": ["使用问题反馈", "bug确认", "需求", "设备/驱动问题", "demo"],
+      "ai": "软件错了选 bug确认；要新东西选需求；硬件驱动选设备/驱动问题；其余选使用问题反馈"
+    },
+    {
+      "name": "处理状态",
+      "type": "select",
+      "key": "status",
+      "extract": true,
+      "options": ["待处理", "AE处理中", "BUG处理中", "等待客户反馈", "转现场处理", "等待版本更新", "版本已发待验证", "BUG但规避处理", "已解决", "搁置", "无法解决"],
+      "closedOptions": ["已解决", "搁置", "无法解决"],
+      "legacy": { "跟进中": "AE处理中", "已关闭": "已解决" },
+      "ai": "已解决、搁置、无法解决算关闭，其余算未关闭；没有把握就 null"
+    },
+    {
+      "name": "解决方式",
+      "type": "select",
+      "key": "resolution",
+      "extract": true,
+      "options": ["已修复", "规避方案", "说明澄清", "等待版本", "无法复现", "无法解决"],
+      "consistency": {
+        "已修复": ["已解决"],
+        "规避方案": ["已解决", "BUG但规避处理"],
+        "说明澄清": ["已解决"],
+        "等待版本": ["等待版本更新", "版本已发待验证"],
+        "无法复现": ["无法解决", "搁置"],
+        "无法解决": ["无法解决", "搁置"]
+      },
+      "ai": "必须与处理状态一致；对不上就 null"
+    },
+    {
+      "name": "软件版本",
+      "type": "select",
+      "key": "product",
+      "extract": true,
+      "normalize": "version",
+      "options": ["4.4.5", "445", "4.2.11", "4211", "4.2.12", "4.12", "4.2", "4.5"],
+      "aiSkip": ["4.12"],
+      "ai": "先归一成 x.y.z（445 → 4.4.5，4211 → 4.2.11）再匹配；同一版本有点分写法和紧凑写法时选点分写法；4.12 不能自动选；没提到就留空。示例不是完整版本表"
+    },
+    {
+      "name": "解决版本",
+      "type": "text",
+      "key": "fixed_version",
+      "extract": true,
+      "ai": "聊天没提就留空"
+    },
+    {
+      "name": "问题描述",
+      "type": "text",
+      "key": "problem",
+      "extract": true,
+      "multiline": true,
+      "ai": "三段式：【版本/环境】【复现】【现象与影响】；没提到的写「聊天记录中未提及」"
+    },
+    {
+      "name": "解决方案",
+      "type": "text",
+      "key": "solution",
+      "extract": true,
+      "multiline": true,
+      "ai": "三段：根因 → 处理动作 → 验证结果"
+    },
+    {
+      "name": "排查过程",
+      "type": "text",
+      "key": "process",
+      "extract": true,
+      "multiline": true,
+      "when": "complex",
+      "ai": "本地始终保留；只有聊天超过 10 条或跨多天才写入这一列，否则留空"
+    },
+    {
+      "name": "检测维度",
+      "type": "multi",
+      "key": "dimensions",
+      "extract": true,
+      "options": ["2D", "3D"],
+      "ai": "2D / 3D，按聊天内容判断"
+    },
+    {
+      "name": "检测类型",
+      "type": "multi",
+      "key": "inspection_types",
+      "extract": true,
+      "options": ["尺寸测量", "外观检测", "位置引导", "有无检测", "体积测量", "平面度", "高度测量", "缺陷检测", "胶路检测", "其他"],
+      "ai": "按检测内容选（测尺寸→尺寸测量）；判断不了留空"
+    },
+    {
+      "name": "行业",
+      "type": "multi",
+      "key": "industries",
+      "extract": true,
+      "options": ["3C半导体", "新能源锂电", "汽车", "物流包装", "医药", "其他"],
+      "ai": "能判断就选；判断不了留空"
+    },
+    {
+      "name": "是否可作案例",
+      "type": "select",
+      "key": "case_visibility",
+      "extract": false,
+      "options": ["可公开", "需匿名", "不可公开"],
+      "ai": "AI 不填，用户自己选"
+    },
+    {
+      "name": "相关文档",
+      "type": "text",
+      "key": "docs",
+      "extract": true,
+      "ai": "链接，可空"
+    },
+    {
+      "name": "本地记录ID",
+      "type": "text",
+      "key": "local_id",
+      "extract": false,
+      "ai": "自动生成，格式 AE-YYYYMMDD-NN"
+    },
+    {
+      "name": "需求线索",
+      "type": "text",
+      "key": "needs",
+      "extract": true,
+      "ai": "「痛点 → 想法」，多条用分号分隔"
+    }
+  ],
+  "people": {
+    "fieldName": "处理人"
+  }
+}

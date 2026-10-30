@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { PageHeader, Prose, Section, customerHref, recordHref } from "@/components/bits"
 import { CopyFeishuButton, StatusSelect } from "@/components/record-actions"
 import { ShotThumbs } from "@/components/shot-thumbs"
+import { readRecordField, SPEC_STATUS_OPTIONS } from "@/lib/feishu-schema"
+import { loadFeishuSchemaState } from "@/lib/feishu-schema-load"
 import { getRecord } from "@/lib/kb"
 
 export const dynamic = "force-dynamic"
@@ -14,6 +16,17 @@ export default async function RecordPage({ params }: PageProps<"/records/[custom
   const { customer, file } = await params
   const r = await getRecord(decodeURIComponent(customer), decodeURIComponent(file))
   if (!r) notFound()
+  const schemaState = await loadFeishuSchemaState()
+  const statusCol =
+    schemaState.ok
+      ? schemaState.schema.columns.find((c) => c.key === "status" && c.type === "select")
+      : undefined
+  const shown = new Set(["date", "contact", "channel", "product", "module", "category"])
+  const extraMeta = schemaState.ok
+    ? schemaState.schema.columns
+        .filter((c) => c.key && (c.type === "text" || c.type === "select") && !shown.has(c.key) && c.key !== "needs")
+        .map((c) => [c.name, readRecordField(r, c.key!)] as const)
+    : Object.entries(r.extras ?? {}).map(([k, v]) => [k, v] as const)
 
   const meta = [
     ["日期", r.date],
@@ -22,6 +35,7 @@ export default async function RecordPage({ params }: PageProps<"/records/[custom
     ["产品/版本", r.product],
     ["模块", r.module],
     ["分类", r.category],
+    ...extraMeta,
   ]
 
   return (
@@ -31,8 +45,8 @@ export default async function RecordPage({ params }: PageProps<"/records/[custom
         {r.customer} 的时间线
       </Link>
       <PageHeader title={r.title}>
-        <StatusSelect record={r} />
-        <CopyFeishuButton record={r} />
+        <StatusSelect record={r} statusOptions={statusCol?.options ?? [...SPEC_STATUS_OPTIONS]} />
+        <CopyFeishuButton record={r} schemaState={schemaState} />
         <Link
           href={`${recordHref(r)}/edit`}
           className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-sm font-medium hover:bg-muted"

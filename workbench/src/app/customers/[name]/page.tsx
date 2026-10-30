@@ -6,8 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { EmptyState, PageHeader, StatusBadge, recordHref } from "@/components/bits"
 import { CopyContextButton, FilesPanel, ProfileEditor } from "@/components/customer-panels"
 import { ShotThumbs } from "@/components/shot-thumbs"
-import { getProfile, listCustomerNames, listFiles, listRecords } from "@/lib/kb"
-import { OPEN_STATUSES, type CustomerProfile, type SupportRecord } from "@/lib/types"
+import { getProfile, listCustomerNames, listFiles, listRecords, recordIsOpen } from "@/lib/kb"
+import { type CustomerProfile, type SupportRecord } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
 
@@ -45,7 +45,7 @@ export default async function CustomerPage({ params }: PageProps<"/customers/[na
   const timeline = [...records].sort((a, b) => (a.date + a.created).localeCompare(b.date + b.created))
   const linked = new Set(records.flatMap((r) => r.screenshots))
   const unlinked = files.filter((f) => !linked.has(f.name))
-  const open = records.filter((r) => OPEN_STATUSES.includes(r.status)).length
+  const open = records.filter((r) => recordIsOpen(r.status)).length
   const modules = Object.entries(
     records.reduce<Record<string, number>>((m, r) => ((m[r.module || "未标注"] = (m[r.module || "未标注"] ?? 0) + 1), m), {}),
   ).sort((a, b) => b[1] - a[1])
@@ -91,7 +91,7 @@ export default async function CustomerPage({ params }: PageProps<"/customers/[na
                 <li key={r.id} className="relative">
                   <span
                     className={`absolute top-5 -left-[31px] size-3 rounded-full ring-4 ring-muted ${
-                      OPEN_STATUSES.includes(r.status) ? "bg-amber-500" : "bg-primary"
+                      recordIsOpen(r.status) ? "bg-amber-500" : "bg-primary"
                     }`}
                   />
                   <Card size="sm">

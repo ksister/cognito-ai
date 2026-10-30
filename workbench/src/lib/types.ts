@@ -14,7 +14,7 @@ export const NEED_TYPES = ["软件改进", "辅助工具", "文档/教程", "其
 export const CUSTOMER_STAGES = ["售前", "POC/打样", "交付中", "量产维护", "已流失"] as const
 
 export type Channel = (typeof CHANNELS)[number]
-export type Status = string  // widened: Feishu 处理状态 options may differ from STATUSES
+export type Status = string
 export type NeedType = (typeof NEED_TYPES)[number]
 
 export type Need = {
@@ -27,7 +27,7 @@ export type RecordDraft = {
   title: string
   date: string
   customer: string
-  channel: Channel
+  channel: string
   contact: string
   product: string
   module: string
@@ -42,6 +42,19 @@ export type RecordDraft = {
   chat: string
   /** Screenshot filenames under customers/<客户>/files/. Empty on records saved before T3. */
   screenshots: string[]
+  /** Optional Feishu columns. Missing keys on old records stay empty. */
+  site: string
+  support_type: string
+  resolution: string
+  fixed_version: string
+  dimensions: string[]
+  inspection_types: string[]
+  industries: string[]
+  case_visibility: string
+  docs: string
+  local_id: string
+  /** Other config-driven frontmatter keys (English snake_case). */
+  extras: Record<string, string>
 }
 
 export type SupportRecord = RecordDraft & {
@@ -105,8 +118,6 @@ export type ExtractResult = {
   transcript?: TranscriptTurn[]
 }
 
-export const OPEN_STATUSES: Status[] = ["待处理", "跟进中"]
-
 export function localDate(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0")
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
@@ -121,8 +132,8 @@ export function emptyDraft(customer = ""): RecordDraft {
     contact: "",
     product: "",
     module: "",
-    category: "使用咨询",
-    status: "已解决",
+    category: "",
+    status: "",
     problem: "",
     process: "",
     solution: "",
@@ -131,5 +142,16 @@ export function emptyDraft(customer = ""): RecordDraft {
     uncertain: [],
     chat: "",
     screenshots: [],
+    site: "",
+    support_type: "",
+    resolution: "",
+    fixed_version: "",
+    dimensions: [],
+    inspection_types: [],
+    industries: [],
+    case_visibility: "",
+    docs: "",
+    local_id: "",
+    extras: {},
   }
 }
