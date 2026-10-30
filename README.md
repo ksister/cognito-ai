@@ -25,6 +25,7 @@ npm run dev                   # 打开 http://localhost:4317
 - **不配置 AI 也能用**：会用规则做初步提取（区分我方/客户、抓问题和结论、识别"能不能/太麻烦"等需求线索）。
 - **配置 AI**：支持任何 OpenAI 兼容接口，`.env.example` 里有 DeepSeek、通义千问、OpenAI 的写法。
 - **飞书直写**：在 `.env.local` 填写 `LARK_BASE_TOKEN` 和 `LARK_TABLE_ID`。`.env.example` 只有占位符，仓库不内置默认表格。
+- **飞书测试表探测**（还没有真实结论）：在 `workbench/.env.local` 写上与生产表不同的 `LARK_TEST_TABLE_ID`。Windows 在仓库根执行 `cd /d C:\Users\TianYun\cognito-ai\workbench && node scripts\lark-t4-probe.mjs`。退出码 0 且三行都是 `PASS` 才表示测试表上更新、附件、连更两次都成立；请把整段输出发回来。脚本不会改生产表。详情写在脚本开头。
 - ⚠️ 聊天记录会发送给你配置的模型服务商。涉及客户机密时，先确认公司规定，或使用公司内部部署的模型（同样填 `AI_BASE_URL` 即可）。
 
 ### 飞书表格列对齐
