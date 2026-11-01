@@ -1,5 +1,11 @@
 import "server-only"
-import { buildExtractSystem, constrainDraftSelects, FeishuSchemaError, normalizeExtractedDraft } from "./feishu-schema"
+import {
+  buildExtractSystem,
+  constrainDraftSelects,
+  defaultedUncertain,
+  FeishuSchemaError,
+  normalizeExtractedDraft,
+} from "./feishu-schema"
 import { loadFeishuSchemaState } from "./feishu-schema-load"
 import {
   localDate,
@@ -155,7 +161,9 @@ export function rulesExtract(chat: string, me?: string): Partial<RecordDraft> {
   const all = msgs.map((m) => m.text).join("\n")
 
   const firstQuestion = theirs.slice(0, 3).map((m) => m.text).join("\n")
-  const category = CATEGORY_RULES.find(([, re]) => re.test(firstQuestion || all))?.[0] ?? "使用咨询"
+  const categoryHit = CATEGORY_RULES.find(([, re]) => re.test(firstQuestion || all))?.[0]
+  const category = categoryHit ?? "使用咨询"
+  const resolved = /解决了|好了|可以了|搞定|正常了|没问题了/.test(all.slice(-400))
 
   const needs: Need[] = theirs
     .filter((m) => NEED_RE.test(m.text))
@@ -171,7 +179,7 @@ export function rulesExtract(chat: string, me?: string): Partial<RecordDraft> {
     date,
     contact,
     category,
-    status: /解决了|好了|可以了|搞定|正常了|没问题了/.test(all.slice(-400)) ? "已解决" : "跟进中",
+    status: resolved ? "已解决" : "跟进中",
     problem: firstQuestion,
     process: mine
       .slice(0, 8)
@@ -184,6 +192,7 @@ export function rulesExtract(chat: string, me?: string): Partial<RecordDraft> {
       myName
         ? `已将「${myName}」识别为我方，其余为客户方。`
         : "未能识别我方昵称，请在左侧填写「我在聊天里的昵称」后重新整理。",
+      ...defaultedUncertain({ channel: true, status: !resolved, category: !categoryHit }),
     ],
   }
 }
