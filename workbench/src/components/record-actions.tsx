@@ -1,11 +1,12 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Check, ClipboardCopy, Download, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { selectClass } from "@/components/bits"
+import { recordHref, selectClass } from "@/components/bits"
 import { CopyFallback } from "@/components/copy-fallback"
 import { copyFetchedText } from "@/lib/copy-text"
 import type { FeishuSchemaState } from "@/lib/feishu-schema"
@@ -211,10 +212,26 @@ export function SyncPanel({ records, schemaState }: { records: SupportRecord[]; 
     <div className="space-y-3">
       <p className="text-sm">
         有 <span className="font-semibold text-primary">{records.length}</span> 条记录还没填进飞书表格。
-        一次复制全部，粘贴到「工作台粘贴」视图的最后一行即可。
+        可以逐条「同步飞书」（走 lark-cli 直写），或复制后手工粘贴。
       </p>
       {!schemaState.ok && <p className="text-sm text-amber-800">{schemaState.error}</p>}
-      <div className="flex flex-wrap gap-2">
+      <ul className="space-y-2">
+        {sorted.map((r) => (
+          <li key={r.id} className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <Link href={recordHref(r)} className="block truncate text-sm font-medium hover:text-primary">
+                {r.title}
+              </Link>
+              <span className="text-xs text-muted-foreground">
+                {r.customer}
+                {r.date ? ` · ${r.date}` : ""}
+              </span>
+            </div>
+            <SyncFeishuButton record={r} />
+          </li>
+        ))}
+      </ul>
+      <div className="flex flex-wrap gap-2 border-t pt-3">
         <Button
           onClick={() => {
             if (!schemaState.ok) {
