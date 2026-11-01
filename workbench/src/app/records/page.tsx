@@ -4,8 +4,10 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { EmptyState, PageHeader, StatusBadge, customerHref, recordHref, selectClass } from "@/components/bits"
-import { listCustomerNames, listRecords } from "@/lib/kb"
-import { CATEGORIES, OPEN_STATUSES, STATUSES } from "@/lib/types"
+import { SPEC_STATUS_OPTIONS } from "@/lib/feishu-schema"
+import { loadFeishuSchemaState } from "@/lib/feishu-schema-load"
+import { listCustomerNames, listRecords, recordIsOpen } from "@/lib/kb"
+import { CATEGORIES } from "@/lib/types"
 
 export const dynamic = "force-dynamic"
 
@@ -16,15 +18,23 @@ export default async function RecordsPage({ searchParams }: PageProps<"/records"
   const status = typeof sp.status === "string" ? sp.status : ""
   const category = typeof sp.category === "string" ? sp.category : ""
 
-  const [all, customers] = await Promise.all([listRecords(), listCustomerNames()])
-  const terms = q.toLowerCase().split(/\s+/).filter(Boolean)
+  const [all, customers, schemaState] = await Promise.all([
+    listRecords(),
+    listCustomerNames(),
+    loadFeishuSchemaState(),
+  ])
+  const statusOptions =
+    schemaState.ok
+      ? schemaState.schema.columns.find((c) => c.key === "status" && c.type === "select")?.options ?? [...SPEC_STATUS_OPTIONS]
+      : [...SPEC_STATUS_OPTIONS]
+  const terms = q.toLowerCase().split(/\s+/).filter((t): t is string => Boolean(t))
   const records = all.filter((r) => {
     if (customer && r.customer !== customer) return false
-    if (status === "open" && !OPEN_STATUSES.includes(r.status)) return false
+    if (status === "open" && !recordIsOpen(r.status)) return false
     if (status && status !== "open" && r.status !== status) return false
     if (category && r.category !== category) return false
     if (terms.length) {
-      const hay = [r.title, r.customer, r.problem, r.process, r.solution, r.thoughts, r.module, r.product, r.chat]
+      const hay = [r.title, r.customer, r.problem, r.process, r.solution, r.thoughts, r.module, r.product, r.chat, r.local_id, r.site]
         .join("\n")
         .toLowerCase()
       return terms.every((t) => hay.includes(t))
@@ -43,7 +53,7 @@ export default async function RecordsPage({ searchParams }: PageProps<"/records"
       <form className="mb-4 grid gap-2 sm:grid-cols-[1fr_10rem_8rem_8rem_auto]">
         <div className="relative">
           <Search className="pointer-events-none absolute top-2 left-2.5 size-4 text-muted-foreground" />
-          <Input name="q" defaultValue={q} placeholder="搜索：曝光、标定、报错码、客户名…" className="bg-background pl-8" />
+          <Input name="q" defaultValue={q} placeholder="搜索：曝光、标定、客户名、AE-20261015-01…" className="bg-background pl-8" />
         </div>
         <select name="customer" defaultValue={customer} className={`${selectClass} bg-background`}>
           <option value="">全部客户</option>
@@ -54,7 +64,7 @@ export default async function RecordsPage({ searchParams }: PageProps<"/records"
         <select name="status" defaultValue={status} className={`${selectClass} bg-background`}>
           <option value="">全部状态</option>
           <option value="open">未结</option>
-          {STATUSES.map((s) => (
+          {statusOptions.map((s) => (
             <option key={s}>{s}</option>
           ))}
         </select>

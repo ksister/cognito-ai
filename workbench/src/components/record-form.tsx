@@ -23,11 +23,21 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { recordHref, selectClass } from "@/components/bits"
 import { compressImageFile } from "@/lib/client-image"
+import { CopyFallback } from "@/components/copy-fallback"
+import { CopyTextError, copyText } from "@/lib/copy-text"
+import { feishuClipboard } from "@/lib/feishu"
 import {
-  CATEGORIES,
-  CHANNELS,
+  checkResolutionStatus,
+  mergeExtractedDraft,
+  readMulti,
+  readRecordField,
+  schemaColumnKeys,
+  writeRecordField,
+  type FeishuColumn,
+  type FeishuSchemaState,
+} from "@/lib/feishu-schema"
+import {
   NEED_TYPES,
-  STATUSES,
   emptyDraft,
   type ExtractErrorCode,
   type ExtractResult,
@@ -36,7 +46,6 @@ import {
   type RecordDraft,
   type SupportRecord,
 } from "@/lib/types"
-import { toTsvRows } from "@/lib/feishu"
 import { OCR_TRANSCRIPT_MARKER, resolveExtractedChat } from "@/lib/transcript"
 
 const MAX_SHOTS = 9
@@ -67,7 +76,22 @@ type Props = {
   vlLabel?: string
   initial?: SupportRecord
   defaultCustomer?: string
+  schemaState: FeishuSchemaState
+  siteSuggestions?: string[]
 }
+
+const LOCAL_FIELDS: { key: "title" | "date" | "contact" | "channel" | "product" | "module" | "category" | "status" | "problem" | "process" | "solution"; label: string; multiline?: boolean; date?: boolean }[] = [
+  { key: "title", label: "标题" },
+  { key: "date", label: "日期", date: true },
+  { key: "contact", label: "联系人" },
+  { key: "channel", label: "渠道（仅本地，不导出）" },
+  { key: "product", label: "产品/版本" },
+  { key: "module", label: "模块（仅本地，不导出）" },
+  { key: "status", label: "状态" },
+  { key: "problem", label: "问题描述", multiline: true },
+  { key: "process", label: "处理过程", multiline: true },
+  { key: "solution", label: "解决方案 / 当前结论", multiline: true },
+]
 
 const THOUGHT_PROMPTS = ["根因判断：", "客户真正想要的是：", "软件可以改进：", "下次遇到可以直接：", "需要补充到知识库："]
 
@@ -81,10 +105,13 @@ const ERR_HINT: Record<ExtractErrorCode, string> = {
   truncated: "输出被截断",
 }
 
-export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustomer }: Props) {
+export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustomer, schemaState, siteSuggestions = [] }: Props) {
   const router = useRouter()
   const editing = Boolean(initial)
-  const [d, setD] = useState<RecordDraft>(() => (initial ? { ...initial } : emptyDraft(defaultCustomer ?? "")))
+  const [d, setD] = useState<RecordDraft>(() => {
+    const base = initial ? { ...initial } : emptyDraft(defaultCustomer ?? "")
+    return { ...base, extras: base.extras ?? {} }
+  })
   const [me, setMe] = useState("")
   const [extracting, setExtracting] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -96,8 +123,8 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const [lastSource, setLastSource] = useState<"screenshot" | "paste" | undefined>()
   const [vlError, setVlError] = useState<string>()
   const [handlerOpenIds, setHandlerOpenIds] = useState<string[]>([])
-  const [companyOption, setCompanyOption] = useState("")
   const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "upload" | "attach" | "done">("idle")
+  const [copyFallback, setCopyFallback] = useState<string | null>(null)
   const [feishuMeta, setFeishuMeta] = useState<{
     configured: boolean
     error?: string
@@ -116,7 +143,6 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const transcriptBaseline = useRef<string | null>(null)
   const dragRef = useRef(false)
   const shotsRef = useRef(shots)
-
   useEffect(() => {
     shotsRef.current = shots
   }, [shots])
@@ -149,15 +175,6 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       cancelled = true
     }
   }, [])
-
-  const companyList = feishuMeta?.options.company
-  const companyKey = `${d.customer}\0${(companyList ?? []).join("\0")}`
-  const [seenCompanyKey, setSeenCompanyKey] = useState(companyKey)
-  if (seenCompanyKey !== companyKey) {
-    setSeenCompanyKey(companyKey)
-    const hit = companyList?.find((c) => c === d.customer.trim())
-    if (hit) setCompanyOption(hit)
-  }
 
   useEffect(() => {
     return () => {
@@ -323,13 +340,10 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       const source = data.source ?? (useShots ? "screenshot" : "paste")
       const nextChat = resolveExtractedChat(source, d.chat, data.draft.chat)
       transcriptBaseline.current = source === "screenshot" ? nextChat : null
-      setD((p) => ({
-        ...p,
-        ...Object.fromEntries(Object.entries(data.draft).filter(([, v]) => v !== undefined && v !== "")),
-        customer: p.customer,
-        thoughts: p.thoughts,
-        chat: resolveExtractedChat(source, p.chat, data.draft.chat),
-      }))
+      setD((p) => {
+        const merged = mergeExtractedDraft(p, data.draft, schemaState.ok ? schemaState.schema : null)
+        return { ...merged, customer: p.customer || merged.customer, thoughts: p.thoughts, chat: nextChat }
+      })
       setWarning(data.warning)
       setExtracted(true)
       setLastSource(source)
@@ -360,9 +374,20 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     setSaving(true)
     setSavePhase("local")
     try {
-      const bodyDraft = { ...d, title: d.title.trim() || d.problem.trim().slice(0, 24) }
+      const resolutionCol = schemaState.ok
+        ? schemaState.schema.columns.find((c) => c.key === "resolution")
+        : undefined
+      const resolutionCheck = checkResolutionStatus(d.resolution, d.status, resolutionCol?.consistency)
+      const bodyDraft = {
+        ...d,
+        title: d.title.trim() || d.problem.trim().slice(0, 24),
+        extras: d.extras ?? {},
+        resolution: resolutionCheck.hint ? "" : d.resolution,
+        uncertain: resolutionCheck.hint
+          ? [...d.uncertain, ...resolutionCheck.uncertain.filter((u) => !d.uncertain.includes(u))]
+          : d.uncertain,
+      }
       const feishuSide = {
-        companyOption: companyOption || undefined,
         handlerOpenIds,
         push: !editing,
       }
@@ -408,11 +433,23 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         } else {
           const stepFail = fr.steps.filter((x) => !x.ok).map((x) => x.step).join(",")
           toast.error(`本地已保存；飞书未完成（${stepFail || "未知"}）：${fr.error || "失败"}。可用「复制为飞书行」降级`)
-          try {
-            await navigator.clipboard.writeText(toTsvRows([data as SupportRecord]))
-            toast.message("已把本行复制到剪贴板，可粘贴到飞书表格")
-          } catch {
-            /* ignore */
+          if (!schemaState.ok) {
+            toast.error(`没有复制到剪贴板：表结构配置不可用。${schemaState.error}`)
+          } else {
+            const clip = feishuClipboard([data as SupportRecord], schemaState.schema)
+            if (!clip.text) {
+              toast.error("没有复制到剪贴板：生成的行是空的")
+            } else {
+              try {
+                await copyText(clip.text)
+                for (const w of clip.warnings) toast.message(w)
+                toast.message("已把本行复制到剪贴板，可粘贴到飞书表格")
+              } catch (e) {
+                const err = e instanceof CopyTextError ? e : new CopyTextError((e as Error).message, clip.text)
+                setCopyFallback(err.text || clip.text)
+                toast.error(`没有复制到剪贴板。${err.message}`)
+              }
+            }
           }
         }
       } else {
@@ -427,10 +464,13 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     }
   }
 
-  const statusOptions =
-    feishuMeta?.options.status?.length ? feishuMeta.options.status : [...STATUSES]
-  const companyOptions = feishuMeta?.options.company ?? []
   const handlers = feishuMeta?.handlers ?? []
+  const schema = schemaState.ok ? schemaState.schema : null
+  const covered = schema ? schemaColumnKeys(schema) : new Set<string>()
+  const personColumns = schema?.columns.filter((c) => c.type === "person") ?? []
+  const attachmentColumns = schema?.columns.filter((c) => c.type === "attachment") ?? []
+  const resolutionCol = schema?.columns.find((c) => c.key === "resolution")
+  const consistencyHint = checkResolutionStatus(d.resolution, d.status, resolutionCol?.consistency).hint
 
   const canSave = editing || confirmed || (!shots.length && !extracted)
   const saveBlockedReason =
@@ -438,6 +478,11 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
 
   return (
     <div className="grid gap-6 pb-24 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+      {copyFallback && (
+        <div className="lg:col-span-2">
+          <CopyFallback text={copyFallback} />
+        </div>
+      )}
       <Card className="h-fit lg:sticky lg:top-8">
         <CardHeader>
           <CardTitle>① 上传聊天截图</CardTitle>
@@ -643,6 +688,9 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 </div>
               )}
               {warning && <p className="text-sm text-amber-900">{warning}</p>}
+              {consistencyHint && (
+                <p className="rounded-lg bg-background/70 p-2 text-sm text-amber-950">{consistencyHint}</p>
+              )}
               {d.uncertain.map((u, i) => (
                 <div key={i} className="flex items-start gap-2 rounded-lg bg-background/70 p-2 text-sm">
                   <span className="flex-1">{u}</span>
@@ -677,77 +725,87 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         <Card>
           <CardHeader>
             <CardTitle>② 核对记录</CardTitle>
-            <CardDescription>这些字段会进入飞书表格和客户时间线。</CardDescription>
+            <CardDescription>
+              {schema
+                ? "飞书列按表结构配置的顺序显示。单选只能选配置里的选项。本地记录里配置没覆盖的字段仍可编辑。"
+                : "飞书列配置缺失，下面只显示本地记录字段，不会套用旧的 11 列模板。"}
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="title">标题</Label>
-              <Input id="title" value={d.title} onChange={(e) => { set("title", e.target.value); setConfirmed(false) }} placeholder="一句话说清问题" />
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Field label="日期">
-                <Input type="date" value={d.date} onChange={(e) => { set("date", e.target.value); setConfirmed(false) }} />
-              </Field>
-              <Field label="联系人">
-                <Input value={d.contact} onChange={(e) => { set("contact", e.target.value); setConfirmed(false) }} />
-              </Field>
-              <Field label="渠道">
-                <select className={selectClass} value={d.channel} onChange={(e) => { set("channel", e.target.value as RecordDraft["channel"]); setConfirmed(false) }}>
-                  {CHANNELS.map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="处理状态（飞书）">
-                <select className={selectClass} value={d.status} onChange={(e) => { set("status", e.target.value); setConfirmed(false) }}>
-                  {[...new Set([...statusOptions, d.status].filter(Boolean))].map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="产品/版本">
-                <Input value={d.product} onChange={(e) => { set("product", e.target.value); setConfirmed(false) }} placeholder="如 VisionMaster 4.3" />
-              </Field>
-              <Field label="模块">
-                <Input value={d.module} onChange={(e) => { set("module", e.target.value); setConfirmed(false) }} placeholder="定位 / 标定 / 测量…" />
-              </Field>
-              <Field label="问题分类" className="sm:col-span-2">
-                <select className={selectClass} value={d.category} onChange={(e) => { set("category", e.target.value); setConfirmed(false) }}>
-                  {[...new Set([...CATEGORIES, d.category])].map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </Field>
+            {!schemaState.ok && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                <p className="font-medium">还不能复制为飞书行</p>
+                <p className="mt-1">{schemaState.error}</p>
+              </div>
+            )}
+            {consistencyHint && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                {consistencyHint}
+              </div>
+            )}
+            {schema && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {schema.columns.map((col) => (
+                  <SchemaColumnField
+                    key={`${col.type}-${col.name}`}
+                    col={col}
+                    draft={d}
+                    suggestions={siteSuggestions}
+                    onChange={(key, value) => {
+                      setD((p) => writeRecordField(p, key, value))
+                      setConfirmed(false)
+                    }}
+                    onMulti={(key, values) => {
+                      setD((p) => ({ ...p, [key]: values }))
+                      setConfirmed(false)
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+            {(personColumns.length > 0 || attachmentColumns.length > 0) && (
+              <p className="text-xs text-muted-foreground">
+                {personColumns.length > 0 ? `人员列（${personColumns.map((c) => c.name).join("、")}）` : ""}
+                {personColumns.length > 0 && attachmentColumns.length > 0 ? "和" : ""}
+                {attachmentColumns.length > 0 ? `附件列（${attachmentColumns.map((c) => c.name).join("、")}）` : ""}
+                复制时留空，避免后面的列粘贴错位。
+              </p>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              {LOCAL_FIELDS.filter((f) => !covered.has(f.key)).map((f) => (
+                <Field key={f.key} label={f.label} className={f.multiline ? "sm:col-span-2" : undefined}>
+                  {f.multiline ? (
+                    <Textarea
+                      value={d[f.key]}
+                      onChange={(e) => { set(f.key, e.target.value); setConfirmed(false) }}
+                      className="min-h-20"
+                    />
+                  ) : (
+                    <Input
+                      type={f.date ? "date" : "text"}
+                      value={d[f.key]}
+                      placeholder={f.key === "title" ? "一句话说清问题" : undefined}
+                      onChange={(e) => { set(f.key, e.target.value); setConfirmed(false) }}
+                    />
+                  )}
+                </Field>
+              ))}
             </div>
             {!editing && (
               <div className="space-y-3 rounded-lg border border-dashed border-sky-300 bg-sky-50/50 p-3">
                 <p className="text-sm font-medium text-sky-950">飞书直写（确认保存后）</p>
                 <p className="text-xs text-sky-900/80">
-                  {feishuMeta == null
-                    ? "正在加载飞书字段…"
-                    : feishuMeta.configured
-                      ? `默认走本机 lark-cli（${feishuMeta.mode || "cli"}）；未命中的 select 会跳过或写入「其他-待确认」。`
-                      : `飞书未就绪：${feishuMeta.error || "请安装并登录 lark-cli（config init）"}。本地仍可保存，可用行复制降级。`}
+                  {!schema
+                    ? "表结构配置未就绪，不会按旧列模板写入飞书。"
+                    : feishuMeta == null
+                      ? "正在检查 lark-cli…"
+                      : feishuMeta.configured
+                        ? `默认走 lark-cli（${feishuMeta.mode || "cli"}）。建行只写配置里带 fieldId 的列。复制为飞书行是失败时的兜底。`
+                        : `lark-cli 未就绪：${feishuMeta.error || "请登录 lark-cli"}。本地仍可保存；配置齐全后可用「复制为飞书行」。`}
                 </p>
-                <Field label="客户公司（飞书 select）">
-                  <select
-                    className={selectClass}
-                    value={companyOption}
-                    onChange={(e) => {
-                      setCompanyOption(e.target.value)
-                      setConfirmed(false)
-                    }}
-                  >
-                    <option value="">（按客户名自动匹配；未命中→其他-待确认）</option>
-                    {companyOptions.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                {handlers.length > 0 && (
-                  <Field label="处理人（open_id 多选）">
+                {schema && <SyncOptionsButton />}
+                {personColumns.length > 0 && handlers.length > 0 && (
+                  <Field label={`${personColumns.map((c) => c.name).join("、")}（open_id 多选）`}>
                     <div className="flex flex-wrap gap-2">
                       {handlers.map((h) => {
                         const on = handlerOpenIds.includes(h.open_id)
@@ -770,22 +828,13 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                     </div>
                   </Field>
                 )}
-                {handlers.length === 0 && (
+                {personColumns.length > 0 && handlers.length === 0 && (
                   <p className="text-xs text-muted-foreground">
-                    未配置 LARK_HANDLERS 时不写处理人字段。格式见 .env.example。
+                    未配置 LARK_HANDLERS 时不写人员列。格式见 .env.example。复制行时该列留空。
                   </p>
                 )}
               </div>
             )}
-            <Field label="问题描述">
-              <Textarea value={d.problem} onChange={(e) => { set("problem", e.target.value); setConfirmed(false) }} className="min-h-20" />
-            </Field>
-            <Field label="处理过程">
-              <Textarea value={d.process} onChange={(e) => { set("process", e.target.value); setConfirmed(false) }} className="min-h-24" />
-            </Field>
-            <Field label="解决方案 / 当前结论">
-              <Textarea value={d.solution} onChange={(e) => { set("solution", e.target.value); setConfirmed(false) }} className="min-h-20" />
-            </Field>
           </CardContent>
         </Card>
 
@@ -894,11 +943,178 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   )
 }
 
+function SyncOptionsButton() {
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<{
+    applied?: boolean
+    changes: { name: string; added: string[]; removed: string[] }[]
+    fieldIds?: { name: string; before: string; after: string }[]
+    peopleField?: { name: string; before: string; after: string } | null
+    missingInFeishu: string[]
+    missingInConfig: string[]
+    path: string
+  } | null>(null)
+
+  async function run(apply: boolean) {
+    setBusy(true)
+    try {
+      const res = await fetch("/api/feishu/schema/options", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apply }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "同步失败")
+      setPreview(data)
+      if (apply) {
+        const n = (data.changes?.length ?? 0) + (data.fieldIds?.length ?? 0) + (data.peopleField ? 1 : 0)
+        toast.success(n ? `已写入私有配置（${n} 处选项或 fieldId）` : "没有变化")
+      }
+    } catch (e) {
+      toast.error((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void run(false)}>
+        {busy ? <Loader2 className="animate-spin" /> : null}
+        从飞书同步字段
+      </Button>
+      {preview && !preview.applied && (
+        <div className="space-y-2 rounded-md border bg-background p-2 text-xs">
+          <p>只改选项和 fieldId，不改列名或 AI 规则。确认后写入私有配置，不会进 git。文件：{preview.path}</p>
+          <p>人员 open_id 不从这里写入。请在同一文件的 people.defaultOpenId 手填本人的 ou_…。</p>
+          {preview.changes.length === 0 && (preview.fieldIds?.length ?? 0) === 0 && !preview.peopleField && <p>没有变化。</p>}
+          {preview.changes.map((c) => (
+            <p key={c.name}>
+              {c.name} 选项：新增 {c.added.join("、") || "无"}；去掉 {c.removed.join("、") || "无"}
+            </p>
+          ))}
+          {(preview.fieldIds ?? []).map((c) => (
+            <p key={`id-${c.name}`}>
+              {c.name} fieldId：{c.before || "（空）"} → {c.after}
+            </p>
+          ))}
+          {preview.peopleField && (
+            <p>
+              处理人 fieldId：{preview.peopleField.before || "（空）"} → {preview.peopleField.after}
+            </p>
+          )}
+          {preview.missingInFeishu.length > 0 && <p>配置里有、飞书没有：{preview.missingInFeishu.join("、")}</p>}
+          {preview.missingInConfig.length > 0 && <p>飞书有选项、配置里没有同名列：{preview.missingInConfig.join("、")}</p>}
+          {(preview.changes.length > 0 || (preview.fieldIds?.length ?? 0) > 0 || preview.peopleField) && (
+            <Button type="button" size="sm" disabled={busy} onClick={() => void run(true)}>
+              确认写入
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
     <div className={`space-y-1.5 ${className ?? ""}`}>
       <Label>{label}</Label>
       {children}
     </div>
+  )
+}
+
+function SchemaColumnField({
+  col,
+  draft,
+  suggestions,
+  onChange,
+  onMulti,
+}: {
+  col: FeishuColumn
+  draft: RecordDraft
+  suggestions: string[]
+  onChange: (key: string, value: string) => void
+  onMulti: (key: "dimensions" | "inspection_types" | "industries", values: string[]) => void
+}) {
+  if (col.type === "person" || col.type === "attachment" || !col.key) return null
+  if (col.key === "needs") {
+    return (
+      <p className="text-xs text-muted-foreground sm:col-span-2">
+        「{col.name}」对应需求线索，在下方第④节编辑。复制时写成「痛点 → 想法」，多条用分号分隔。
+      </p>
+    )
+  }
+  if (col.key === "local_id") {
+    return (
+      <Field label={col.name}>
+        <Input value={draft.local_id} readOnly placeholder="保存或复制时自动生成" />
+      </Field>
+    )
+  }
+  if (col.type === "multi" && (col.key === "dimensions" || col.key === "inspection_types" || col.key === "industries")) {
+    const selected = readMulti(draft, col.key)
+    return (
+      <Field label={col.name} className="sm:col-span-2">
+        <div className="flex flex-wrap gap-2">
+          {col.options.map((opt) => {
+            const on = selected.includes(opt)
+            return (
+              <label key={opt} className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs">
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() => onMulti(col.key as "dimensions" | "inspection_types" | "industries", on ? selected.filter((v) => v !== opt) : [...selected, opt])}
+                />
+                {opt}
+              </label>
+            )
+          })}
+        </div>
+      </Field>
+    )
+  }
+  const value = readRecordField(draft, col.key)
+  if (col.key === "site") {
+    const siteOptions = [...new Set([...(col.suggestions ?? []), ...suggestions])]
+    return (
+      <Field label={col.name}>
+        <Input list="site-suggestions" value={value} onChange={(e) => onChange(col.key!, e.target.value)} placeholder="输入时会按历史项目/现场补全" />
+        <datalist id="site-suggestions">
+          {siteOptions.map((s) => (
+            <option key={s} value={s} />
+          ))}
+        </datalist>
+      </Field>
+    )
+  }
+  if (col.type === "select") {
+    const orphan = value && !col.options.includes(value) ? value : ""
+    return (
+      <Field label={col.name}>
+        <select className={selectClass} value={value} onChange={(e) => onChange(col.key!, e.target.value)}>
+          <option value="">（留空）</option>
+          {col.options.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+          {orphan && <option value={orphan}>{orphan}（不在配置选项中）</option>}
+        </select>
+      </Field>
+    )
+  }
+  if (col.multiline) {
+    return (
+      <Field label={col.name} className="sm:col-span-2">
+        <Textarea value={value} onChange={(e) => onChange(col.key!, e.target.value)} className="min-h-20" />
+      </Field>
+    )
+  }
+  return (
+    <Field label={col.name}>
+      <Input type={col.key === "date" ? "date" : "text"} value={value} onChange={(e) => onChange(col.key!, e.target.value)} />
+    </Field>
   )
 }

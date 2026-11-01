@@ -10,8 +10,8 @@ import {
   parseTranscript,
   resolveExtractedChat,
 } from "./transcript"
+import { parseFeishuTableSchema } from "./feishu-schema"
 import {
-  EXTRACT_VL_SYSTEM,
   QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS,
   TRUNCATED_VL_MESSAGE,
   errorIfTruncated,
@@ -21,7 +21,9 @@ import {
   VL_TIMEOUT_MS_DEFAULT,
   vlTimeoutMessage,
   vlTransportError,
+  vlSystemFor,
 } from "./vl"
+import { readFileSync } from "node:fs"
 
 const FIXTURE = {
   title: "极耳定位偏移",
@@ -53,11 +55,15 @@ const EXPECTED_CHAT = [
 
 describe("VL transcript", () => {
   it("puts transcript in the prompt and parses it into 原始聊天记录", () => {
-    expect(EXTRACT_VL_SYSTEM).toContain('"transcript"')
-    expect(EXTRACT_VL_SYSTEM).toContain("逐字转写")
-    expect(EXTRACT_VL_SYSTEM).toContain("不要自己添加")
-    expect(EXTRACT_VL_SYSTEM).not.toContain("请输出首行 [OCR")
-    expect(EXTRACT_VL_SYSTEM.lastIndexOf('"transcript"')).toBeGreaterThan(EXTRACT_VL_SYSTEM.lastIndexOf('"uncertain"'))
+    const example = parseFeishuTableSchema(
+      JSON.parse(readFileSync(path.join(process.cwd(), "config", "feishu-table.example.json"), "utf8")),
+    )
+    const system = vlSystemFor(example)
+    expect(system).toContain('"transcript"')
+    expect(system).toContain("逐字转写")
+    expect(system).toContain("不要自己添加")
+    expect(system).not.toContain("请输出首行 [OCR")
+    expect(system.lastIndexOf('"transcript"')).toBeGreaterThan(system.lastIndexOf('"uncertain"'))
 
     const draft = normalizeVlDraft(FIXTURE)
     expect(draft.chat).toBe(EXPECTED_CHAT)
