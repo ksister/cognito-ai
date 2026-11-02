@@ -20,6 +20,7 @@ import {
   sameRowUpdateError,
   screenshotsToUpload,
 } from "./lark-push-plan"
+import { larkAuthExpiryMessage } from "./lark-auth-error"
 import type { RecordDraft } from "./types"
 
 /** Field IDs for 技术支持表格 — locked by DoD */
@@ -295,6 +296,10 @@ function cliErrorMessage(run: CliRunResult): { message: string; code: string | n
             message: `lark-cli 未配置/未登录：${msg}${hint}。请运行 lark-cli config init 并完成 OAuth（--as user）。`,
             code: "cli_not_configured",
           }
+        }
+        const expiry = larkAuthExpiryMessage({ type, subtype, message: msg, hint: String(err.hint ?? "") })
+        if (expiry) {
+          return { message: `${expiry}（原始错误：${msg}${hint}）`, code: "cli_auth_expired" }
         }
         const code = (err.code as string | number | undefined) ?? (subtype || type || "cli_error")
         return { message: `${msg}${hint}`, code }
