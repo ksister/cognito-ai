@@ -230,16 +230,15 @@ describe("feishu table schema", () => {
 })
 
 describe("defaultedUncertain", () => {
-  it("flags all three defaults", () => {
-    expect(defaultedUncertain({ channel: true, status: true, category: true })).toEqual([
+  it("flags both defaults", () => {
+    expect(defaultedUncertain({ channel: true, status: true })).toEqual([
       "渠道未识别，已默认为「微信」",
-      "处理状态未识别，已默认为「跟进中」",
-      "分类未识别，已默认为「使用咨询」",
+      "处理状态未识别，已默认为「AE处理中」",
     ])
   })
 
   it("flags only the status fallback", () => {
-    expect(defaultedUncertain({ status: true })).toEqual(["处理状态未识别，已默认为「跟进中」"])
+    expect(defaultedUncertain({ status: true })).toEqual(["处理状态未识别，已默认为「AE处理中」"])
   })
 
   it("returns empty when nothing falls back", () => {

@@ -192,7 +192,7 @@ export function rulesExtract(chat: string, me?: string): Partial<RecordDraft> {
       myName
         ? `已将「${myName}」识别为我方，其余为客户方。`
         : "未能识别我方昵称，请在左侧填写「我在聊天里的昵称」后重新整理。",
-      ...defaultedUncertain({ channel: true, status: !resolved, category: !categoryHit }),
+      ...defaultedUncertain({ channel: true, status: !resolved }),
     ],
   }
 }

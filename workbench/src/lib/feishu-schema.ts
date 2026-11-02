@@ -52,12 +52,11 @@ export const DEFAULT_STATUS_LEGACY: Record<string, string> = {
   已关闭: "已解决",
 }
 
-/** T6：渠道/状态/分类回退到默认值时的 uncertain 提示。 */
-export function defaultedUncertain(flags: { channel?: boolean; status?: boolean; category?: boolean }): string[] {
+/** T6：渠道/状态回退到默认值时的 uncertain 提示。 */
+export function defaultedUncertain(flags: { channel?: boolean; status?: boolean }): string[] {
   const out: string[] = []
   if (flags.channel) out.push("渠道未识别，已默认为「微信」")
-  if (flags.status) out.push("处理状态未识别，已默认为「跟进中」")
-  if (flags.category) out.push("分类未识别，已默认为「使用咨询」")
+  if (flags.status) out.push("处理状态未识别，已默认为「AE处理中」")
   return out
 }
 
