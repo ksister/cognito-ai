@@ -18,7 +18,7 @@
  * 只读写环境变量里的测试表。生产表 LARK_TABLE_ID 只用来比对，绝不传给 CLI。
  *
  * 在仓库根（Windows）：
- *   cd /d C:\Users\TianYun\cognito-ai\workbench
+ *   cd /d C:\<你的路径>\workbench
  *   node scripts\lark-t4-probe.mjs
  *
  * 先看计划、不调用飞书：
