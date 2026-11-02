@@ -7,6 +7,7 @@ import {
   buildCreateFields,
   buildExtractSystem,
   checkResolutionStatus,
+  defaultedUncertain,
   diffColumnOptions,
   FeishuSchemaError,
   matchVersionOption,
@@ -225,5 +226,22 @@ describe("feishu table schema", () => {
     ) as { columns: { ai?: string; options: string[] }[] }
     expect(next.columns[0].ai).toBe("保留")
     expect(next.columns[0].options).toContain("示例-新增")
+  })
+})
+
+describe("defaultedUncertain", () => {
+  it("flags both defaults", () => {
+    expect(defaultedUncertain({ channel: true, status: true })).toEqual([
+      "渠道未识别，已默认为「微信」",
+      "处理状态未识别，已默认为「AE处理中」",
+    ])
+  })
+
+  it("flags only the status fallback", () => {
+    expect(defaultedUncertain({ status: true })).toEqual(["处理状态未识别，已默认为「AE处理中」"])
+  })
+
+  it("returns empty when nothing falls back", () => {
+    expect(defaultedUncertain({})).toEqual([])
   })
 })
