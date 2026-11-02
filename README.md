@@ -19,13 +19,15 @@
 cd workbench
 npm install
 cp .env.example .env.local   # 可选：填 AI_API_KEY 启用大模型
-npm run dev                   # 打开 http://localhost:4317
+npm run dev                   # 打开 http://localhost:4321
 ```
 
 - **不配置 AI 也能用**：会用规则做初步提取（区分我方/客户、抓问题和结论、识别"能不能/太麻烦"等需求线索）。
 - **配置 AI**：支持任何 OpenAI 兼容接口，`.env.example` 里有 DeepSeek、通义千问、OpenAI 的写法。
+- **截图录入**：记一笔页拖入微信/飞书聊天截图（最多 9 张）→ 通义 VL（`DASHSCOPE_*`）转写+提取草稿 → 黄色区核对 → 写几句「我的思考」→ 保存。VL 默认 5 分钟超时，超时或失败就改用粘贴文字。
 - **飞书直写**：在 `.env.local` 填写 `LARK_BASE_TOKEN` 和 `LARK_TABLE_ID`。`.env.example` 只有占位符，仓库不内置默认表格。
-- **飞书测试表探测**：在 `workbench/.env.local` 写上与生产表不同的 `LARK_TEST_TABLE_ID`。Windows：`cd /d C:\Users\TianYun\cognito-ai\workbench && node scripts\lark-t4-probe.mjs`。用户本机（AE智能助手）已跑通，三行 SUMMARY 都是 `PASS`。脚本按那次结果处理：`record_id` 读 `data.record.record_id_list[0]`；创建后等 1.5 秒再更新（否则可能 `800030405 not_found`）；附件 `--file` 用当前目录相对路径；`--json @file.json` 用无 BOM 的 UTF-8（不要用 PowerShell `Set-Content -Encoding UTF8`）。多选写字符串数组，例如 `{"fldWlbihaw":["尺寸测量","外观检测"]}`。人员字段写 open_id 对象 `{"fldR5MJ3au":[{"id":"ou_…"}]}`，不要写显示名字符串。详情在脚本开头。
+- **lark-cli 安装与登录**：直写默认走 `lark-cli --as user`（个人身份）。安装 `npx @larksuite/cli@latest install`，登录 `lark-cli auth login`（浏览器授权）。不在 PATH 时在 `.env.local` 设 `LARK_CLI_PATH`。注意个人身份 token 可能短时过期，过期后重新 `lark-cli auth login`，或用「复制为飞书行」兜底。
+- **飞书测试表探测**：在 `workbench/.env.local` 写上与生产表不同的 `LARK_TEST_TABLE_ID`。Windows：`cd /d C:\<你的路径>\workbench && node scripts\lark-t4-probe.mjs`。用户本机（AE智能助手）已跑通，三行 SUMMARY 都是 `PASS`。脚本按那次结果处理：`record_id` 读 `data.record.record_id_list[0]`；创建后等 1.5 秒再更新（否则可能 `800030405 not_found`）；附件 `--file` 用当前目录相对路径；`--json @file.json` 用无 BOM 的 UTF-8（不要用 PowerShell `Set-Content -Encoding UTF8`）。多选写字符串数组，例如 `{"fldWlbihaw":["尺寸测量","外观检测"]}`。人员字段写 open_id 对象 `{"fldR5MJ3au":[{"id":"ou_…"}]}`，不要写显示名字符串。详情在脚本开头。
 - ⚠️ 聊天记录会发送给你配置的模型服务商。涉及客户机密时，先确认公司规定，或使用公司内部部署的模型（同样填 `AI_BASE_URL` 即可）。
 
 ### 飞书表格列对齐
