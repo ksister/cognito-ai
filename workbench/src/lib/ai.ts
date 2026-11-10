@@ -7,6 +7,7 @@ import {
   normalizeExtractedDraft,
 } from "./feishu-schema"
 import { loadFeishuSchemaState } from "./feishu-schema-load"
+import { mergeReorganizedDraft } from "./reorganize"
 import {
   localDate,
   type ExtractResult,
@@ -97,6 +98,7 @@ export async function reorganizeRecord(
   chat: string,
   notes: string[],
   base: RecordDraft,
+  source: "screenshot" | "paste" = "paste",
 ): Promise<ExtractResult> {
   const schemaState = await loadFeishuSchemaState()
   if (!schemaState.ok) throw new FeishuSchemaError(schemaState.error)
@@ -144,8 +146,9 @@ export async function reorganizeRecord(
     const normalized = normalizeExtractedDraft(draft, schema)
     return {
       mode: "ai",
-      draft: { ...normalized, chat: base.chat, thoughts: base.thoughts },
-      source: "paste",
+      // Empty model values keep the current draft; chat and thoughts never change.
+      draft: mergeReorganizedDraft(base, normalized),
+      source,
     }
   } catch (e) {
     if (e instanceof FeishuSchemaError) throw e

@@ -3,7 +3,7 @@ import { FeishuSchemaError } from "@/lib/feishu-schema"
 import type { RecordDraft } from "@/lib/types"
 
 export async function POST(req: Request) {
-  let body: { chat?: string; notes?: string[]; draft?: RecordDraft }
+  let body: { chat?: string; notes?: string[]; draft?: RecordDraft; source?: string }
   try {
     body = (await req.json()) as typeof body
   } catch {
@@ -12,7 +12,8 @@ export async function POST(req: Request) {
   if (!body.draft) return Response.json({ error: "缺少草稿" }, { status: 400 })
   try {
     const notes = Array.isArray(body.notes) ? body.notes.map((n) => String(n ?? "")) : []
-    const result = await reorganizeRecord(String(body.chat ?? ""), notes, body.draft)
+    const source = body.source === "screenshot" ? "screenshot" : "paste"
+    const result = await reorganizeRecord(String(body.chat ?? ""), notes, body.draft, source)
     return Response.json(result)
   } catch (e) {
     if (e instanceof FeishuSchemaError) {

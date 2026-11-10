@@ -17,6 +17,7 @@ import {
   Wand2,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { changedFieldLabels, mergeReorganizedDraft } from "@/lib/reorganize"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -220,6 +221,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
 
   const [notes, setNotes] = useState<string[]>([])
   const [reorganizing, setReorganizing] = useState(false)
+  const [changedLabels, setChangedLabels] = useState<string[]>([])
 
   async function reorganize() {
     const filled = notes.map((n) => n.trim()).filter(Boolean)
@@ -232,7 +234,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       const res = await fetch("/api/reorganize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat: d.chat, notes: filled, draft: d }),
+        body: JSON.stringify({ chat: d.chat, notes: filled, draft: d, source: lastSource }),
       })
       const json = (await res.json()) as { draft?: RecordDraft; warning?: string; error?: string }
       if (!res.ok || json.error) {
@@ -240,10 +242,13 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         return
       }
       if (json.draft) {
-        // Only fields change; chat and thoughts stay as they were (D6).
-        setD((p) => ({ ...p, ...json.draft, chat: p.chat, thoughts: p.thoughts }))
+        // Empty model values keep the current draft; chat and thoughts never change (D6).
+        const merged = mergeReorganizedDraft(d, json.draft)
+        const labels = changedFieldLabels(d, merged)
+        setChangedLabels(labels)
+        setD(merged)
         setConfirmed(false)
-        toast.success("已按说明重新整理，请重新确认")
+        toast.success(labels.length ? `本次修改了：${labels.join("、")}，请重点核对后重新确认` : "没有可更新的字段，请重新确认")
       }
       if (json.warning) toast(json.warning)
     } catch (e) {
@@ -802,6 +807,11 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                     {reorganizing ? "整理中…" : "按说明重新整理"}
                   </Button>
                 </div>
+              )}
+              {changedLabels.length > 0 && (
+                <p className="rounded-lg border border-amber-400 bg-amber-100 px-3 py-2 text-sm text-amber-950">
+                  本次修改了：<b>{changedLabels.join("、")}</b>（请重点核对这几项后重新确认）
+                </p>
               )}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button
