@@ -42,6 +42,7 @@ import {
   emptyDraft,
   type ExtractErrorCode,
   type ExtractResult,
+  type FeishuPushPending,
   type FeishuPushResult,
   type Need,
   type RecordDraft,
@@ -125,7 +126,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const [lastSource, setLastSource] = useState<"screenshot" | "paste" | undefined>()
   const [vlError, setVlError] = useState<string>()
   const [handlerOpenIds, setHandlerOpenIds] = useState<string[]>([])
-  const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "update" | "upload" | "attach" | "done">("idle")
+  const [savePhase, setSavePhase] = useState<"idle" | "local" | "create" | "update" | "upload" | "attach" | "writing" | "done">("idle")
   const [copyFallback, setCopyFallback] = useState<string | null>(null)
   const [feishuMeta, setFeishuMeta] = useState<{
     configured: boolean
@@ -499,21 +500,21 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       const data = (await res.json()) as SupportRecord & {
         error?: string
         screenshots?: string[]
-        feishu?: FeishuPushResult
+        feishu?: FeishuPushResult | FeishuPushPending
       }
       if (!res.ok) throw new Error(data.error || "保存失败")
 
       const fr = data.feishu
-      if (fr) {
-        if (fr.steps.length === 0) {
-          // D19: local save returned; the Feishu write is still running in the background.
-          setSavePhase("upload")
-          const status = await pollFeishuStatus(data.customer, data.file)
-          setSavePhase("done")
-          if (status === "failed") toast.error("已保存到本地，飞书写入失败，可在记录里重推")
-          else if (status === "written") toast.success("已保存并写入飞书")
-          else toast.message("已保存到本地，飞书还在后台写入")
-        }
+      if (fr && fr.pending === true) {
+        // D19 save-and-return: the local record is saved, the Feishu write is still running
+        // in the background. Show 「写入中」 and wait for the real outcome — never claim success.
+        setSavePhase("writing")
+        const status = await pollFeishuStatus(data.customer, data.file)
+        setSavePhase("done")
+        if (status === "failed") toast.error("已保存到本地，飞书写入失败，可在记录里重推")
+        else if (status === "written") toast.success("已保存并写入飞书")
+        else toast.message("已保存到本地，飞书还在后台写入")
+      } else if (fr) {
         for (const st of fr.steps) {
           if (st.step === "create") setSavePhase("create")
           if (st.step === "update") setSavePhase("update")
@@ -1073,9 +1074,11 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                           ? "本地→上传新截图"
                           : savePhase === "attach"
                             ? "本地→附件"
-                            : savePhase === "done"
-                              ? "完成"
-                              : "…"
+                            : savePhase === "writing"
+                              ? "已保存到本地，飞书写入中…"
+                              : savePhase === "done"
+                                ? "完成"
+                                : "…"
                 }`
               : ""}
           </span>

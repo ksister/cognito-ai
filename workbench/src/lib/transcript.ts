@@ -152,6 +152,16 @@ export function transcriptUncertainty(turns: TranscriptTurn[]): string[] {
   return notes
 }
 
+/** Uncertain note for one screenshot whose transcription failed (one bad image must not waste the batch). */
+export function failedScreenshotNote(index: number): string {
+  return `第 ${index} 张截图转写失败，可重新整理或改用粘贴`
+}
+
+/** Placeholder line kept in 原始聊天记录 where the failed screenshot would have been. */
+export function failedScreenshotTurn(index: number): TranscriptTurn {
+  return { speaker: "系统", text: failedScreenshotNote(index), kind: "speech" }
+}
+
 export function mergeUncertain(existing: string[], extra: string[]): string[] {
   const out = [...existing]
   for (const n of extra) {

@@ -6,8 +6,11 @@ import {
   VL_TRANSCRIPT_RULE,
   VL_TRANSCRIPT_SCHEMA,
   applyTranscript,
+  failedScreenshotNote,
+  failedScreenshotTurn,
   formatScreenshotChat,
   mergeTranscriptList,
+  mergeUncertain,
   parseTranscript,
   type TranscriptTurn,
 } from "./transcript"
@@ -234,6 +237,36 @@ export async function transcribeImage(
   }
 }
 
+/** One screenshot's transcription result. */
+export type TranscribedPart = { turns: TranscriptTurn[]; windowTitle: string }
+
+export type TranscriptFailure = { index: number; reason: unknown }
+
+/**
+ * Merge per-image transcription results in image order (T11 review 2).
+ * A screenshot that failed keeps a placeholder line where it would have been and its own
+ * `uncertain` note, so the other screenshots still produce a draft.
+ */
+export function combineTranscribedParts(settled: PromiseSettledResult<TranscribedPart>[]): {
+  turns: TranscriptTurn[]
+  windowTitle: string
+  failures: TranscriptFailure[]
+} {
+  const parts: TranscriptTurn[][] = []
+  const failures: TranscriptFailure[] = []
+  let windowTitle = ""
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") {
+      parts.push(r.value.turns)
+      if (!windowTitle && r.value.windowTitle) windowTitle = r.value.windowTitle
+    } else {
+      failures.push({ index: i + 1, reason: r.reason })
+      parts.push([failedScreenshotTurn(i + 1)])
+    }
+  })
+  return { turns: mergeTranscriptList(parts), windowTitle, failures }
+}
+
 export async function extractFromScreenshots(
   images: Buffer[],
   opts: { customer?: string; me?: string; profile?: string },
@@ -251,19 +284,32 @@ export async function extractFromScreenshots(
   const schemaState = await loadFeishuSchemaState()
   if (!schemaState.ok) throw new VlExtractError("parse_error", schemaState.error)
 
-  // 1) compress in parallel, 2) transcribe each image in parallel (D19)
+  // 1) compress in parallel, 2) transcribe each image in parallel (D19).
+  // allSettled: one bad screenshot must not throw away the others (T11 review 2).
   const compressed = await Promise.all(images.map((raw) => compressImageBuffer(raw)))
-  const parts = await Promise.all(compressed.map((buf) => transcribeImage(buf)))
+  const settled = await Promise.allSettled(compressed.map((buf) => transcribeImage(buf)))
+  const combined = combineTranscribedParts(settled)
+  if (combined.failures.length === settled.length) {
+    // Every screenshot failed: keep the old single-error experience (auth/timeout hints + 改用粘贴).
+    const reason = combined.failures[0].reason
+    if (reason instanceof VlExtractError) throw reason
+    throw new VlExtractError("parse_error", `截图转写失败：${(reason as Error)?.message || "未知错误"}。可改用粘贴文字。`)
+  }
   // 3) merge adjacent overlaps; 4) fields come from the text model (same path as paste)
-  const turns = mergeTranscriptList(parts.map((p) => p.turns))
-  const windowTitle = parts.map((p) => p.windowTitle).find(Boolean) ?? ""
-  const chat = formatScreenshotChat(turns)
-  const forModel = windowTitle ? `${chat}\n\n[聊天窗口标题] ${windowTitle}` : chat
+  const failures = combined.failures
+  const failureNotes = failures.map((f) => failedScreenshotNote(f.index))
+  const chat = formatScreenshotChat(combined.turns)
+  const forModel = combined.windowTitle ? `${chat}\n\n[聊天窗口标题] ${combined.windowTitle}` : chat
   const result = await extractRecord(forModel, { customer: opts.customer, me: opts.me, profile: opts.profile })
   return {
     ...result,
-    draft: { ...result.draft, chat },
-    transcript: turns,
+    warning: [result.warning, ...failureNotes].filter(Boolean).join("；") || undefined,
+    draft: {
+      ...result.draft,
+      chat,
+      uncertain: mergeUncertain(result.draft.uncertain ?? [], failureNotes),
+    },
+    transcript: combined.turns,
     source: "screenshot",
     imageCount: compressed.length,
   }

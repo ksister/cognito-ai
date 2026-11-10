@@ -1,5 +1,5 @@
 import { getRecord, updateRecord } from "@/lib/kb"
-import { pushSavedRecord } from "@/lib/feishu-record-push"
+import { queueSavedRecordPush } from "@/lib/feishu-record-push"
 import type { RecordDraft } from "@/lib/types"
 
 type Ctx = { params: Promise<{ customer: string; file: string }> }
@@ -30,7 +30,10 @@ export async function PUT(req: Request, { params }: Ctx) {
   try {
     const saved = await updateRecord(decodeURIComponent(customer), decodeURIComponent(file), patch)
     if (!syncFeishu) return Response.json(saved)
-    const pushed = await pushSavedRecord(saved, {
+    // Same per-record queue as the create path (T11 review 1): a save whose background
+    // write is still running has no feishu_record_id yet, so this push must wait for it
+    // and then update that row instead of creating a second one.
+    const pushed = await queueSavedRecordPush(saved.customer, saved.file, {
       handlerOpenIds: feishuSide?.handlerOpenIds,
       companyOption: feishuSide?.companyOption,
     })
