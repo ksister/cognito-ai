@@ -186,6 +186,37 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   }, [])
 
   const set = <K extends keyof RecordDraft>(k: K, v: RecordDraft[K]) => setD((p) => ({ ...p, [k]: v }))
+  const [addingCustomer, setAddingCustomer] = useState(false)
+  const customerCol = schemaState.ok ? schemaState.schema.columns.find((c) => c.key === "customer") : undefined
+  const customerOptions = Array.from(
+    new Set([...(customerCol?.options ?? []), ...Object.keys(customerCol?.aliases ?? {}), ...customers]),
+  ).sort()
+
+  async function addCustomerOption() {
+    const name = window.prompt("新客户名称（会在飞书这张表新增一个选项）")?.trim()
+    if (!name) return
+    if (!window.confirm(`确认在飞书表的「客户公司1」新增选项「${name}」？`)) return
+    setAddingCustomer(true)
+    try {
+      const res = await fetch("/api/feishu/customer-option", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      })
+      const json = (await res.json()) as { ok?: boolean; options?: string[]; error?: string }
+      if (!res.ok || json.error) {
+        toast.error(json.error || "新建客户失败")
+        return
+      }
+      set("customer", name)
+      toast.success(`已新增客户「${name}」`)
+      router.refresh()
+    } catch (e) {
+      toast.error(`新建客户失败：${(e as Error).message}`)
+    } finally {
+      setAddingCustomer(false)
+    }
+  }
   const setNeed = (i: number, patch: Partial<Need>) =>
     set("needs", d.needs.map((n, j) => (j === i ? { ...n, ...patch } : n)))
 
@@ -364,10 +395,6 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         return
       }
     }
-    if (!d.customer.trim()) {
-      toast.error("请填写客户名称")
-      return
-    }
     if (!d.title.trim() && !d.problem.trim()) {
       toast.error("至少填写标题或问题描述")
       return
@@ -503,17 +530,24 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="customer">客户 *</Label>
-              <Input
-                id="customer"
-                list="customer-list"
-                value={d.customer}
-                disabled={editing}
-                placeholder="如：宁德某电池厂"
-                onChange={(e) => set("customer", e.target.value)}
-              />
+              <Label htmlFor="customer">客户</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="customer"
+                  list="customer-list"
+                  value={d.customer}
+                  disabled={editing}
+                  placeholder="可留空，或从下拉里选"
+                  onChange={(e) => set("customer", e.target.value)}
+                />
+                {!editing && (
+                  <Button type="button" variant="outline" size="sm" onClick={addCustomerOption} disabled={addingCustomer}>
+                    {addingCustomer ? "…" : "新建客户"}
+                  </Button>
+                )}
+              </div>
               <datalist id="customer-list">
-                {customers.map((c) => (
+                {customerOptions.map((c) => (
                   <option key={c} value={c} />
                 ))}
               </datalist>

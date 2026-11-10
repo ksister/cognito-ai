@@ -288,7 +288,7 @@ function cleanDraft(d: RecordDraft): RecordDraft {
   return {
     ...d,
     title: d.title.trim(),
-    customer: safeName(d.customer),
+    customer: d.customer.trim() ? safeName(d.customer) : "待确认",
     date: /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : localDate(),
     channel: (d.channel ?? "").trim(),
     status: mapLegacyStatus((d.status ?? "").trim(), legacyStatusMapOf(readPrivateSchema())),

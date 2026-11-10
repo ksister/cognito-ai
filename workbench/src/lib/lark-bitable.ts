@@ -621,6 +621,110 @@ async function uploadAttachmentsViaCli(
   }
 }
 
+/**
+ * Add a customer option to the Feishu select field, then sync the private config.
+ * Only call after the user explicitly confirms "新建客户" in the form (D16). AI must not call it.
+ */
+export async function addCustomerOption(name: string): Promise<
+  { ok: true; options: string[] } | { error: string; code: string | number }
+> {
+  const trimmed = name.trim()
+  if (!trimmed) return { error: "客户名不能为空", code: "invalid" }
+  const cfg = readCfg()
+  const resolved = await resolveLarkCli()
+  if (!resolved.path) return { error: resolved.error ?? "未找到 lark-cli", code: "cli_missing" }
+  let schema: FeishuTableSchema
+  try {
+    schema = await readFeishuTableSchema()
+  } catch (e) {
+    return { error: (e as Error).message, code: "feishu_schema" }
+  }
+  const col = schema.columns.find((c) => c.key === "customer")
+  if (!col) return { error: "配置里没有客户列（key=customer）", code: "feishu_schema" }
+  if (!col.fieldId) return { error: "客户列没有 fieldId，无法新增选项", code: "feishu_schema" }
+  const fieldId = col.fieldId
+
+  // Read the CURRENT field options from Feishu first — the private config may be stale,
+  // and +field-update is a full PUT that would otherwise drop options only present in Feishu.
+  const listRun = await runLarkCli(resolved.path, [
+    "base",
+    "+field-list",
+    "--base-token",
+    cfg.baseToken,
+    "--table-id",
+    cfg.tableId,
+    "--as",
+    "user",
+    "--format",
+    "json",
+  ])
+  if (!isCliSuccess(listRun)) {
+    const e = cliErrorMessage(listRun)
+    return { error: e.message, code: e.code }
+  }
+  type ListedField = { id?: string; name?: string; options?: Array<{ name?: string }> }
+  const listed = listRun.json as { data?: { fields?: ListedField[]; items?: ListedField[] } }
+  const fieldMeta = (listed?.data?.fields ?? listed?.data?.items ?? []).find(
+    (f) => f.id === col.fieldId || f.name === col.name,
+  )
+  const currentOptions = (fieldMeta?.options ?? [])
+    .map((o) => o.name)
+    .filter((n): n is string => Boolean(n))
+  const baseOptions = currentOptions.length ? currentOptions : col.options
+  if (baseOptions.includes(trimmed)) return { ok: true, options: baseOptions }
+
+  const nextOptions = [...baseOptions, trimmed]
+  const definition = {
+    name: col.name,
+    type: "select",
+    multiple: false,
+    options: nextOptions.map((n) => ({ name: n })),
+  }
+  const args = [
+    "base",
+    "+field-update",
+    "--base-token",
+    cfg.baseToken,
+    "--table-id",
+    cfg.tableId,
+    "--field-id",
+    fieldId,
+    "--json",
+    JSON.stringify(definition),
+    "--yes",
+    "--as",
+    "user",
+    "--format",
+    "json",
+  ]
+  const run = await runLarkCli(resolved.path, args)
+  if (!isCliSuccess(run)) {
+    const e = cliErrorMessage(run)
+    return { error: e.message, code: e.code }
+  }
+
+  // Sync the private config so the next form load shows the new option.
+  const kbRoot = path.resolve(process.env.KB_DIR ?? path.join(process.cwd(), ".."))
+  const configPath = path.join(kbRoot, "config", "feishu-table.json")
+  try {
+    const raw = JSON.parse(await fs.readFile(configPath, "utf8")) as {
+      columns?: Array<Record<string, unknown>>
+    }
+    const target = raw.columns?.find((c) => c.key === "customer")
+    if (target) {
+      const opts = Array.isArray(target.options) ? (target.options as string[]) : []
+      if (!opts.includes(trimmed)) target.options = [...opts, trimmed]
+      await fs.writeFile(configPath, JSON.stringify(raw, null, 2) + "\n", "utf8")
+    }
+  } catch (e) {
+    return {
+      error: `飞书已加选项，但更新私有配置失败：${(e as Error).message}`,
+      code: "config_write",
+    }
+  }
+  return { ok: true, options: nextOptions }
+}
+
 function emptyOptions(): LarkSelectOptions {
   return {
     company: [],
