@@ -24,6 +24,14 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { recordHref, selectClass } from "@/components/bits"
 import { compressImageFile } from "@/lib/client-image"
+import {
+  admitImages,
+  commitImages,
+  createIntake,
+  digestImage,
+  filesFromClipboardData,
+  forgetImage,
+} from "@/lib/shot-intake"
 import { CopyFallback } from "@/components/copy-fallback"
 import { CopyTextError, copyText } from "@/lib/copy-text"
 import { streamExtract } from "@/lib/extract-stream"
@@ -72,7 +80,8 @@ const SAMPLE_CHAT = `张工-宁德某电池厂 2026-10-28 09:12
 小李 2026-10-28 09:45
 好的，这个需求我记下来反馈给研发。另外建议匹配分数低于阈值时让软件报警，而不是沿用上一次结果`
 
-type Shot = { id: string; file: File; url: string }
+// fingerprint 是图片内容指纹（T15 按内容去重），删掉这张图时会一起放掉
+type Shot = { id: string; file: File; url: string; fingerprint: string }
 
 type Props = {
   customers: string[]
@@ -147,6 +156,10 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const fileRef = useRef<HTMLInputElement>(null)
   const transcriptBaseline = useRef<string | null>(null)
   const dragRef = useRef(false)
+  // T15：截图按内容去重，一次粘贴里的同一张图只留一份
+  const intakeRef = useRef(createIntake())
+  // 串行处理粘贴/拖入，避免两个粘贴监听同时进来时判重与占用张数互相打架
+  const intakeChain = useRef<Promise<void>>(Promise.resolve())
   const shotsRef = useRef(shots)
   useEffect(() => {
     shotsRef.current = shots
@@ -263,64 +276,58 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   const setNeed = (i: number, patch: Partial<Need>) =>
     set("needs", d.needs.map((n, j) => (j === i ? { ...n, ...patch } : n)))
 
-  async function addFiles(list: FileList | File[]) {
+  // 粘贴/拖入统一走这里排队：一次只处理一批，判重和「还能收几张」不会互相打架
+  function addFiles(list: FileList | File[]) {
+    const next = intakeChain.current.then(() => addFilesNow(list))
+    intakeChain.current = next.catch(() => {})
+    // 调用处都是 void，这里兜住异常，避免出现未处理的 rejection
+    return next.catch((e: unknown) => {
+      toast.error(`截图加入失败：${(e as Error).message}`)
+    })
+  }
+
+  async function addFilesNow(list: FileList | File[]) {
     const incoming = [...list].filter((f) => f.type.startsWith("image/"))
     if (!incoming.length) {
       toast.error("请选择图片文件")
       return
     }
+    if (MAX_SHOTS - shotsRef.current.length <= 0) {
+      toast.error(`最多 ${MAX_SHOTS} 张截图，无法再加入`)
+      return
+    }
+    // T15：先按内容去重，同一次粘贴里的重复项和已经在列表里的同一张图都丢掉
+    const { accepted, duplicates } = await admitImages(intakeRef.current, incoming, async (f) => {
+      const file = await compressImageFile(f).catch(() => f)
+      return { file, fingerprint: await digestImage(file) }
+    })
+    if (duplicates > 0) toast(`已忽略 ${duplicates} 张重复截图`)
+    if (!accepted.length) return
+
     const room = MAX_SHOTS - shotsRef.current.length
     if (room <= 0) {
       toast.error(`最多 ${MAX_SHOTS} 张截图，无法再加入`)
       return
     }
-    if (incoming.length > room) {
+    if (accepted.length > room) {
       toast.error(`最多 ${MAX_SHOTS} 张，第 ${MAX_SHOTS + 1} 张及之后未加入`)
     }
-    const accepted = incoming.slice(0, room)
-    const next: Shot[] = []
-    for (const f of accepted) {
-      const compressed = await compressImageFile(f)
-      next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file: compressed, url: URL.createObjectURL(compressed) })
-    }
-    setShots((p) => {
-      const left = MAX_SHOTS - p.length
-      if (left <= 0) {
-        for (const s of next) URL.revokeObjectURL(s.url)
-        return p
-      }
-      const take = next.slice(0, left)
-      for (const s of next.slice(left)) URL.revokeObjectURL(s.url)
-      return [...p, ...take]
-    })
+    const take = accepted.slice(0, room)
+    for (const extra of accepted.slice(room)) forgetImage(intakeRef.current, extra.fingerprint)
+    const next: Shot[] = take.map((a) => ({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      file: a.file,
+      url: URL.createObjectURL(a.file),
+      fingerprint: a.fingerprint,
+    }))
+    commitImages(intakeRef.current, take.map((a) => a.fingerprint))
+    setShots((p) => [...p, ...next])
     setConfirmed(false)
     setVlError(undefined)
   }
 
-  function filesFromClipboard(data: DataTransfer | null): File[] {
-    if (!data) return []
-    const out: File[] = []
-    const seen = new Set<string>()
-    const push = (f: File | null) => {
-      if (!f || !f.type.startsWith("image/")) return
-      const key = `${f.name}-${f.size}-${f.lastModified}-${f.type}`
-      if (seen.has(key)) return
-      seen.add(key)
-      out.push(f)
-    }
-    if (data.items) {
-      for (const item of Array.from(data.items)) {
-        if (item.kind === "file" && item.type.startsWith("image/")) push(item.getAsFile())
-      }
-    }
-    if (data.files?.length) {
-      for (const f of Array.from(data.files)) push(f)
-    }
-    return out
-  }
-
   function handleShotPaste(e: { clipboardData: DataTransfer | null; preventDefault(): void; stopPropagation(): void }) {
-    const files = filesFromClipboard(e.clipboardData)
+    const files = filesFromClipboardData(e.clipboardData)
     if (!files.length) return
     e.preventDefault()
     e.stopPropagation()
@@ -334,19 +341,25 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
         const tag = t.tagName
         if (tag === "TEXTAREA" || tag === "INPUT" || t.isContentEditable) return
       }
-      const files = filesFromClipboard(e.clipboardData)
+      const files = filesFromClipboardData(e.clipboardData)
       if (!files.length) return
       e.preventDefault()
       void addFiles(files)
     }
     window.addEventListener("paste", onWinPaste)
     return () => window.removeEventListener("paste", onWinPaste)
+    // addFiles 只用到 ref，注册一次即可
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function removeShot(id: string) {
     setShots((p) => {
       const hit = p.find((s) => s.id === id)
-      if (hit) URL.revokeObjectURL(hit.url)
+      if (hit) {
+        URL.revokeObjectURL(hit.url)
+        // 删掉的图允许再粘一次
+        forgetImage(intakeRef.current, hit.fingerprint)
+      }
       return p.filter((s) => s.id !== id)
     })
     setConfirmed(false)
