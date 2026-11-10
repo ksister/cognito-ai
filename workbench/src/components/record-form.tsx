@@ -428,6 +428,20 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     }
   }
 
+  async function pollFeishuStatus(customer: string, file: string): Promise<string> {
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 1000))
+      try {
+        const res = await fetch(
+          `/api/feishu/status?customer=${encodeURIComponent(customer)}&file=${encodeURIComponent(file)}`,
+        )
+        const j = (await res.json()) as { status?: string }
+        if (j.status === "written" || j.status === "failed") return j.status
+      } catch {}
+    }
+    return "writing"
+  }
+
   async function save(syncFeishu = false) {
     if (!editing) {
       if ((shots.length > 0 || extracted) && !confirmed) {
@@ -491,6 +505,15 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
 
       const fr = data.feishu
       if (fr) {
+        if (fr.steps.length === 0) {
+          // D19: local save returned; the Feishu write is still running in the background.
+          setSavePhase("upload")
+          const status = await pollFeishuStatus(data.customer, data.file)
+          setSavePhase("done")
+          if (status === "failed") toast.error("已保存到本地，飞书写入失败，可在记录里重推")
+          else if (status === "written") toast.success("已保存并写入飞书")
+          else toast.message("已保存到本地，飞书还在后台写入")
+        }
         for (const st of fr.steps) {
           if (st.step === "create") setSavePhase("create")
           if (st.step === "update") setSavePhase("update")
