@@ -6,6 +6,7 @@ import {
   VL_TRANSCRIPT_RULE,
   VL_TRANSCRIPT_SCHEMA,
   applyTranscript,
+  completedPrefix,
   failedScreenshotNote,
   failedScreenshotTurn,
   formatScreenshotChat,
@@ -242,35 +243,31 @@ export type TranscribedPart = { turns: TranscriptTurn[]; windowTitle: string }
 
 export type TranscriptFailure = { index: number; reason: unknown }
 
-/**
- * Merge per-image transcription results in image order (T11 review 2).
- * A screenshot that failed keeps a placeholder line where it would have been and its own
- * `uncertain` note, so the other screenshots still produce a draft.
- */
-export function combineTranscribedParts(settled: PromiseSettledResult<TranscribedPart>[]): {
+/** Progress pushed to the client while the screenshots are still being transcribed. */
+export type ScreenshotProgress = {
+  /** How many screenshots are done (including failed ones, which keep a placeholder line). */
+  done: number
+  total: number
+  /** The 原始聊天记录 text so far: finished screenshots in image order, overlaps merged. */
+  chat: string
   turns: TranscriptTurn[]
   windowTitle: string
-  failures: TranscriptFailure[]
-} {
-  const parts: TranscriptTurn[][] = []
-  const failures: TranscriptFailure[] = []
-  let windowTitle = ""
-  settled.forEach((r, i) => {
-    if (r.status === "fulfilled") {
-      parts.push(r.value.turns)
-      if (!windowTitle && r.value.windowTitle) windowTitle = r.value.windowTitle
-    } else {
-      failures.push({ index: i + 1, reason: r.reason })
-      parts.push([failedScreenshotTurn(i + 1)])
-    }
-  })
-  return { turns: mergeTranscriptList(parts), windowTitle, failures }
 }
 
-export async function extractFromScreenshots(
-  images: Buffer[],
-  opts: { customer?: string; me?: string; profile?: string },
-): Promise<ExtractResult> {
+export type ScreenshotExtractOptions = { customer?: string; me?: string; profile?: string }
+
+/** Merge finished screenshots in image order; the first window title wins. */
+export function mergeInOrder(parts: TranscribedPart[]): {
+  turns: TranscriptTurn[]
+  windowTitle: string
+} {
+  const turns = mergeTranscriptList(parts.map((p) => p.turns))
+  const windowTitle = parts.map((p) => p.windowTitle).find(Boolean) ?? ""
+  return { turns, windowTitle }
+}
+
+/** Input checks shared by the streaming and the one-shot screenshot paths. */
+function assertExtractable(images: Buffer[]): void {
   if (!DASHSCOPE_API_KEY) {
     throw new VlExtractError("auth", "未配置 DASHSCOPE_API_KEY，无法从截图提取；请改用粘贴文字")
   }
@@ -280,27 +277,26 @@ export async function extractFromScreenshots(
   if (images.length > MAX_SCREENSHOTS) {
     throw new VlExtractError("parse_error", `最多 ${MAX_SCREENSHOTS} 张截图`)
   }
+}
 
-  const schemaState = await loadFeishuSchemaState()
-  if (!schemaState.ok) throw new VlExtractError("parse_error", schemaState.error)
-
-  // 1) compress in parallel, 2) transcribe each image in parallel (D19).
-  // allSettled: one bad screenshot must not throw away the others (T11 review 2).
-  const compressed = await Promise.all(images.map((raw) => compressImageBuffer(raw)))
-  const settled = await Promise.allSettled(compressed.map((buf) => transcribeImage(buf)))
-  const combined = combineTranscribedParts(settled)
-  if (combined.failures.length === settled.length) {
+/** Screenshots → fields. Shared by the streaming and the one-shot paths. */
+async function fieldsFromScreenshots(
+  parts: TranscribedPart[],
+  failures: TranscriptFailure[],
+  total: number,
+  opts: ScreenshotExtractOptions,
+): Promise<ExtractResult> {
+  if (failures.length === total) {
     // Every screenshot failed: keep the old single-error experience (auth/timeout hints + 改用粘贴).
-    const reason = combined.failures[0].reason
+    const reason = failures[0].reason
     if (reason instanceof VlExtractError) throw reason
     throw new VlExtractError("parse_error", `截图转写失败：${(reason as Error)?.message || "未知错误"}。可改用粘贴文字。`)
   }
-  // 3) merge adjacent overlaps; 4) fields come from the text model (same path as paste)
-  const failures = combined.failures
+  const { turns, windowTitle } = mergeInOrder(parts)
   const failureNotes = failures.map((f) => failedScreenshotNote(f.index))
-  const chat = formatScreenshotChat(combined.turns)
-  const forModel = combined.windowTitle ? `${chat}\n\n[聊天窗口标题] ${combined.windowTitle}` : chat
-  const result = await extractRecord(forModel, { customer: opts.customer, me: opts.me, profile: opts.profile })
+  const chat = formatScreenshotChat(turns)
+  const forModel = windowTitle ? `${chat}\n\n[聊天窗口标题] ${windowTitle}` : chat
+  const result = await extractRecord(forModel, opts)
   return {
     ...result,
     warning: [result.warning, ...failureNotes].filter(Boolean).join("；") || undefined,
@@ -309,8 +305,70 @@ export async function extractFromScreenshots(
       chat,
       uncertain: mergeUncertain(result.draft.uncertain ?? [], failureNotes),
     },
-    transcript: combined.turns,
+    transcript: turns,
     source: "screenshot",
-    imageCount: compressed.length,
+    imageCount: total,
   }
+}
+
+/**
+ * Screenshots → fields, calling `onProgress` as soon as each screenshot is transcribed.
+ *
+ * The screenshots are transcribed in parallel, but the transcript is shown in image order:
+ * `onProgress` only reports the longest finished run from the first screenshot, so the text
+ * never jumps around when a later screenshot finishes first. Field extraction still needs
+ * every transcript and runs at the end.
+ */
+export async function extractFromScreenshotsStream(
+  images: Buffer[],
+  opts: ScreenshotExtractOptions,
+  onProgress: (progress: ScreenshotProgress) => void,
+): Promise<ExtractResult> {
+  assertExtractable(images)
+  const schemaState = await loadFeishuSchemaState()
+  if (!schemaState.ok) throw new VlExtractError("parse_error", schemaState.error)
+
+  const compressed = await Promise.all(images.map((raw) => compressImageBuffer(raw)))
+  const slots: (TranscribedPart | null)[] = new Array(compressed.length).fill(null)
+  const failures: TranscriptFailure[] = []
+  let lastEmitted = ""
+
+  const emit = () => {
+    const parts = completedPrefix(slots)
+    const done = slots.filter(Boolean).length
+    // Nothing to show until the FIRST screenshot is done; later ones wait their turn.
+    if (done === 0 || (parts.length === 0 && done < slots.length)) return
+    const signature = `${parts.length}/${done}`
+    if (signature === lastEmitted) return
+    lastEmitted = signature
+    const { turns, windowTitle } = mergeInOrder(parts)
+    onProgress({
+      done,
+      total: compressed.length,
+      chat: formatScreenshotChat(turns),
+      turns,
+      windowTitle,
+    })
+  }
+
+  await Promise.all(
+    compressed.map(async (buf, i) => {
+      try {
+        slots[i] = await transcribeImage(buf)
+      } catch (e) {
+        failures.push({ index: i + 1, reason: e })
+        slots[i] = { turns: [failedScreenshotTurn(i + 1)], windowTitle: "" }
+      }
+      emit()
+    }),
+  )
+
+  return fieldsFromScreenshots(slots as TranscribedPart[], failures, compressed.length, opts)
+}
+
+export async function extractFromScreenshots(
+  images: Buffer[],
+  opts: ScreenshotExtractOptions,
+): Promise<ExtractResult> {
+  return extractFromScreenshotsStream(images, opts, () => {})
 }

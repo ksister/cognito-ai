@@ -243,3 +243,16 @@ export function mergeTranscripts(prev: TranscriptTurn[], next: TranscriptTurn[])
 export function mergeTranscriptList(parts: TranscriptTurn[][]): TranscriptTurn[] {
   return parts.reduce<TranscriptTurn[]>((acc, part) => mergeTranscripts(acc, part), [])
 }
+
+/**
+ * Longest finished run that starts at the first screenshot (streaming display).
+ * A later screenshot that finishes first is held back: 原始聊天记录 must stay in image order.
+ */
+export function completedPrefix<T>(slots: readonly (T | null | undefined)[]): T[] {
+  const out: T[] = []
+  for (const slot of slots) {
+    if (slot == null) break
+    out.push(slot)
+  }
+  return out
+}

@@ -26,6 +26,7 @@ import { recordHref, selectClass } from "@/components/bits"
 import { compressImageFile } from "@/lib/client-image"
 import { CopyFallback } from "@/components/copy-fallback"
 import { CopyTextError, copyText } from "@/lib/copy-text"
+import { streamExtract } from "@/lib/extract-stream"
 import { feishuClipboard } from "@/lib/feishu"
 import {
   checkResolutionStatus,
@@ -117,6 +118,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
   })
   const [me, setMe] = useState("")
   const [extracting, setExtracting] = useState(false)
+  const [transcribe, setTranscribe] = useState<{ done: number; total: number; chat: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [warning, setWarning] = useState<string>()
   const [extracted, setExtracted] = useState(editing)
@@ -383,29 +385,36 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
     setConfirmed(false)
     try {
       localStorage.setItem("ae.me", me)
-      let res: Response
+      let data: ExtractResult & { error?: string; code?: ExtractErrorCode }
       if (useShots) {
+        // Streaming (T11): show each transcript as soon as its screenshot is done.
         const form = new FormData()
         for (const s of shots) form.append("images", s.file, s.file.name)
         form.append("customer", d.customer)
         form.append("me", me)
-        res = await fetch("/api/extract", { method: "POST", body: form })
+        setTranscribe({ done: 0, total: shots.length, chat: "" })
+        try {
+          data = await streamExtract(form, {
+            onProgress: (p) => setTranscribe({ done: p.done, total: p.total, chat: p.chat }),
+          })
+        } catch (e) {
+          setVlError((e as Error).message || "截图提取失败")
+          setShowPaste(true)
+          throw e
+        } finally {
+          setTranscribe(null)
+        }
       } else {
-        res = await fetch("/api/extract", {
+        const res = await fetch("/api/extract", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ chat: d.chat, customer: d.customer, me }),
         })
-      }
-      const data = (await res.json()) as ExtractResult & { error?: string; code?: ExtractErrorCode }
-      if (!res.ok) {
-        const hint = data.code ? ERR_HINT[data.code] : "失败"
-        const msg = data.error || hint
-        if (useShots) {
-          setVlError(msg)
-          setShowPaste(true)
+        data = (await res.json()) as ExtractResult & { error?: string; code?: ExtractErrorCode }
+        if (!res.ok) {
+          const hint = data.code ? ERR_HINT[data.code] : "失败"
+          throw new Error(data.error || hint)
         }
-        throw new Error(msg)
       }
       if (!data.draft || typeof data.draft !== "object") {
         throw new Error("提取结果为空")
@@ -712,11 +721,22 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
           </div>
 
           {extracting && (
-            <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-              {shots.length > 0 && !d.chat.trim()
-                ? `正在转写 ${shots.length} 张截图并整理字段（约 20 秒），请稍候…`
-                : "正在整理字段（约 20 秒），请稍候…"}
-            </p>
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              <p>
+                {transcribe
+                  ? transcribe.done >= transcribe.total
+                    ? "截图转写完成，正在整理字段（约 10 秒）…"
+                    : `正在转写 ${transcribe.total} 张截图（已完成 ${transcribe.done} 张），转完一张先显示一张…`
+                  : shots.length > 0 && !d.chat.trim()
+                    ? `正在转写 ${shots.length} 张截图并整理字段（约 20 秒），请稍候…`
+                    : "正在整理字段（约 20 秒），请稍候…"}
+              </p>
+              {transcribe && transcribe.chat && (
+                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded border border-amber-200 bg-background p-2 font-mono text-xs leading-relaxed">
+                  {transcribe.chat}
+                </pre>
+              )}
+            </div>
           )}
 
           {vlError && (
