@@ -1,4 +1,5 @@
 import { createRecord, listRecords, saveScreenshotBatch, updateRecord } from "@/lib/kb"
+import { recordKey, setFeishuJob } from "@/lib/feishu-jobs"
 import { pushSavedRecord } from "@/lib/feishu-record-push"
 import type { LarkPushResult } from "@/lib/lark-bitable"
 import { compressImageBuffer } from "@/lib/vl"
@@ -74,13 +75,20 @@ export async function POST(req: Request) {
     const wantPush = side.push !== false
     let feishu: LarkPushResult | undefined
     if (wantPush) {
-      // Use the saved record: createRecord assigns local_id after the incoming draft.
-      const pushed = await pushSavedRecord(
+      // D19 save-and-return: the local record is already saved; push to Feishu in the background.
+      const key = recordKey(rec.customer, rec.file)
+      setFeishuJob(key, "writing")
+      void pushSavedRecord(
         { ...rec, screenshots: rec.screenshots },
         { companyOption: side.companyOption, handlerOpenIds: side.handlerOpenIds },
       )
-      Object.assign(rec, pushed.record)
-      feishu = pushed.feishu
+        .then((pushed) => {
+          setFeishuJob(key, pushed.feishu.ok ? "written" : "failed", pushed.feishu)
+        })
+        .catch((e: unknown) => {
+          setFeishuJob(key, "failed", { ok: false, steps: [], warnings: [], error: String(e) })
+        })
+      feishu = { ok: true, steps: [], warnings: [], mode: "cli" }
     }
 
     return Response.json({ ...rec, screenshots: rec.screenshots, feishu })
