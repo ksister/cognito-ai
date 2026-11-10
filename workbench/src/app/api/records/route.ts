@@ -45,7 +45,7 @@ export async function POST(req: Request) {
       if (typeof feishuRaw === "string" && feishuRaw.trim()) {
         side = parseFeishuSide(JSON.parse(feishuRaw))
       }
-      if (!draft.customer?.trim()) return Response.json({ error: "请填写客户" }, { status: 400 })
+      // 客户可以留空：本地归「待确认」，飞书写「其他-待确认」（D16）
       const files = form.getAll("screenshots").filter((f): f is File => typeof f !== "string")
       for (const f of files) {
         const raw = Buffer.from(await f.arrayBuffer())
@@ -56,7 +56,7 @@ export async function POST(req: Request) {
       const { feishu, ...rest } = body
       draft = rest
       side = parseFeishuSide(feishu)
-      if (!draft.customer?.trim()) return Response.json({ error: "请填写客户" }, { status: 400 })
+      // 客户可以留空：本地归「待确认」，飞书写「其他-待确认」（D16）
     }
 
     // 1) Local disk — never rolled back on Feishu failure
