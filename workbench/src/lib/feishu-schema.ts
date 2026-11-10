@@ -742,63 +742,158 @@ export type CustomerTitleCandidate = {
   at: number
   score: number
   reasons: string[]
+  /** OCR segment behind a near-character match, e.g. 「羽创」→「宇创」. */
+  nearFrom?: string
 }
 
 const SUPPORT_SUFFIX = /^(技术支持|技术服务|技术交流|技术支持群|服务群|项目群|对接群|客户群|沟通群)/
+const SUPPORT_WORD = /(技术支持|技术服务|技术交流|技术支持群|服务群|项目群|对接群|客户群|沟通群)/
+const MEMBER_COUNT = /[（(]\s*\d{1,3}\s*[)）]/
+
+/** Split a title into segments: 「工作 羽创 张三」「星河精密-王工」. */
+function titleSegments(title: string): { text: string; start: number }[] {
+  const out: { text: string; start: number }[] = []
+  for (const match of title.normalize("NFKC").matchAll(/[^\s|｜/\\,，、;；:：·•\-—_]+/g)) {
+    const text = match[0].trim()
+    if (text) out.push({ text, start: match.index ?? 0 })
+  }
+  return out
+}
+
+const TITLE_LABELS = new Set([
+  "工作", "客户", "项目", "现场", "售后", "技术", "支持", "内部", "测试", "临时",
+  "好友", "家人", "同事", "群聊", "聊天", "私聊", "备注", "微信", "飞书", "沟通", "对接",
+  "采购", "销售", "商务",
+])
+const COMPANY_WORDS = [
+  "公司", "集团", "科技", "技术", "机械", "电子", "精密", "智能", "包装", "视觉",
+  "自动化", "半导体", "新能源", "材料", "工业", "设备", "仪器", "系统", "软件",
+  "服务", "贸易", "实业", "控股", "股份", "厂", "店", "部", "中心", "研究院",
+]
+const COMMON_SURNAMES = new Set(
+  [
+    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳酆鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵湛汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季麻强贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万支柯昝管卢莫经房裘缪干解应宗丁宣贲邓郁单杭洪包诸左石崔吉钮龚程嵇邢滑裴陆荣翁荀羊於惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧隗山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘钭厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍却璩桑桂濮牛寿通边扈燕冀郏浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩厍聂晁勾敖融冷訾辛阚那简饶空曾毋沙乜养鞠须丰巢关蒯相查后荆红游竺权逯盖益桓公",
+  ].join(""),
+)
+
+/** A remark-name segment such as 张三 / 王工 / 张经理 is a person, never the customer. */
+function looksLikePersonName(segment: string): boolean {
+  const s = normalizeCompanyText(segment)
+  if (!/^[\u4e00-\u9fff]{2,4}$/.test(s)) return false
+  if (COMPANY_WORDS.some((word) => s.includes(word))) return false
+  return COMMON_SURNAMES.has(s[0] ?? "")
+}
+
+function isTitleLabel(segment: string): boolean {
+  return TITLE_LABELS.has(normalizeCompanyText(segment))
+}
 
 /**
  * Customer options (and their aliases) that occur in a chat window title.
- * A WeChat group title usually looks like 「客户名(人数) 我方公司技术支持」:
- * the name before the member count is the customer; the name next to 技术支持 is us.
+ *
+ * Two formats are handled:
+ * - group title 「客户名(人数) 我方公司技术支持」: the name before the count is the customer;
+ * - private-chat remark 「标签 公司名 人名」: match each space/separator-delimited segment exactly,
+ *   then (only when nothing matches exactly) allow a unique one-character OCR near-match.
  */
 export function customerCandidatesInTitle(
   title: string,
   customer: FeishuColumn | undefined,
 ): CustomerTitleCandidate[] {
   if (!customer || customer.type !== "select") return []
-  const text = String(title ?? "").normalize("NFKC").replace(/\s+/g, "")
-  if (!text) return []
+  const text = String(title ?? "").normalize("NFKC")
+  const compact = text.replace(/\s+/g, "")
+  if (!compact) return []
   const skip = new Set(customer.aiSkip ?? [])
   const entries: { needle: string; value: string }[] = []
   for (const option of customer.options) {
     if (!option || skip.has(option)) continue
     entries.push({ needle: option, value: option })
-    const compact = normalizeCompanyText(option)
-    if (compact && compact !== option) entries.push({ needle: compact, value: option })
+    const normalized = normalizeCompanyText(option)
+    if (normalized && normalized !== option) entries.push({ needle: normalized, value: option })
     const core = companyCore(option)
-    if (core && core !== compact) entries.push({ needle: core, value: option })
+    if (core && core !== normalized) entries.push({ needle: core, value: option })
   }
   for (const [alias, option] of Object.entries(customer.aliases ?? {})) {
     if (!option || skip.has(option) || !customer.options.includes(option)) continue
     entries.push({ needle: String(alias), value: option })
-    const compact = normalizeCompanyText(alias)
-    if (compact && compact !== alias) entries.push({ needle: compact, value: option })
+    const normalized = normalizeCompanyText(alias)
+    if (normalized && normalized !== alias) entries.push({ needle: normalized, value: option })
   }
 
   const best = new Map<string, CustomerTitleCandidate>()
-  for (const entry of entries) {
-    if (entry.needle.length < 2) continue
-    let from = 0
-    while (from <= text.length - entry.needle.length) {
-      const at = text.indexOf(entry.needle, from)
-      if (at < 0) break
-      from = at + 1
-      const after = text.slice(at + entry.needle.length)
-      const beforeCount = /^[（(]\d{1,3}[)）]/.test(after)
-      const firstToken = at === 0
-      const nearSupport = SUPPORT_SUFFIX.test(after)
-      const score = (beforeCount ? 100 : 0) + (firstToken ? 20 : 0) - (nearSupport ? 40 : 0)
-      const reasons = [
-        beforeCount ? "人数前" : "",
-        firstToken ? "标题开头" : "",
-        nearSupport ? "紧邻技术支持（我方）" : "",
-      ].filter(Boolean)
-      const prev = best.get(entry.value)
-      if (!prev || score > prev.score || (score === prev.score && at < prev.at)) {
-        best.set(entry.value, { value: entry.value, at, score, reasons })
+  const remember = (candidate: CustomerTitleCandidate) => {
+    const prev = best.get(candidate.value)
+    if (!prev || candidate.score > prev.score || (candidate.score === prev.score && candidate.at < prev.at)) {
+      best.set(candidate.value, candidate)
+    }
+  }
+
+  // Group-title pass: only when the title actually looks like a group header.
+  if (MEMBER_COUNT.test(text) || SUPPORT_WORD.test(text)) {
+    for (const entry of entries) {
+      if (entry.needle.length < 2) continue
+      let from = 0
+      while (from <= compact.length - entry.needle.length) {
+        const at = compact.indexOf(entry.needle, from)
+        if (at < 0) break
+        from = at + 1
+        const after = compact.slice(at + entry.needle.length)
+        const beforeCount = /^[（(]\d{1,3}[)）]/.test(after)
+        const firstToken = at === 0
+        const nearSupport = SUPPORT_SUFFIX.test(after)
+        remember({
+          value: entry.value,
+          at,
+          score: (beforeCount ? 100 : 0) + (firstToken ? 20 : 0) - (nearSupport ? 40 : 0),
+          reasons: [
+            beforeCount ? "人数前" : "",
+            firstToken ? "标题开头" : "",
+            nearSupport ? "紧邻技术支持（我方）" : "",
+          ].filter(Boolean),
+        })
       }
     }
   }
+
+  // Segment pass: exact option/alias/core inside a non-label segment (「宇创」「宇创科技」).
+  const segments = titleSegments(text)
+  for (const segment of segments) {
+    if (isTitleLabel(segment.text)) continue
+    for (const entry of entries) {
+      if (entry.needle.length < 2) continue
+      if (!segment.text.includes(entry.needle)) continue
+      const nearSupport = SUPPORT_WORD.test(segment.text)
+      remember({
+        value: entry.value,
+        at: segment.start,
+        score: 80 - (nearSupport ? 40 : 0),
+        reasons: [nearSupport ? "标题分段（紧邻技术支持，我方）" : "标题分段"].filter(Boolean),
+      })
+    }
+  }
+
+  // Near-character pass: only when no exact hit at all, one unique option, and the segment is
+  // neither a label nor a person name. This is what saves 「羽创」→「宇创」.
+  if (best.size === 0) {
+    const near = new Map<string, { from: string; at: number }>()
+    for (const segment of segments) {
+      if (isTitleLabel(segment.text) || looksLikePersonName(segment.text)) continue
+      const cleaned = segment.text.replace(MEMBER_COUNT, "")
+      const hit = fuzzyCustomerOption(cleaned, customer)
+      if (hit) near.set(hit, { from: cleaned, at: segment.start })
+    }
+    for (const [value, info] of near) {
+      remember({
+        value,
+        at: info.at,
+        score: 40,
+        reasons: ["相近字"],
+        nearFrom: info.from,
+      })
+    }
+  }
+
   return [...best.values()].sort((a, b) => b.score - a.score || a.at - b.at)
 }
 
@@ -807,6 +902,11 @@ export type CustomerTitlePick = {
   confidence: "high" | "medium" | "low"
   candidates: string[]
   uncertain: string[]
+}
+
+function nearCharacterNote(candidate: CustomerTitleCandidate): string[] {
+  if (!candidate.nearFrom) return []
+  return [`聊天窗口标题「${candidate.nearFrom}」按相近字匹配，请确认是否为「${candidate.value}」`]
 }
 
 /** Pick the customer from the window title. Empty means "not confident enough" (D8). */
@@ -820,13 +920,13 @@ export function pickCustomerFromTitle(
   const second = candidates[1]
   const values = candidates.map((c) => c.value)
   if (top.score >= 100 && (!second || top.score > second.score)) {
-    return { value: top.value, confidence: "high", candidates: values, uncertain: [] }
+    return { value: top.value, confidence: "high", candidates: values, uncertain: nearCharacterNote(top) }
   }
   if (candidates.length === 1) {
-    return { value: top.value, confidence: "medium", candidates: values, uncertain: [] }
+    return { value: top.value, confidence: "medium", candidates: values, uncertain: nearCharacterNote(top) }
   }
   if (top.score >= 20 && (!second || top.score > second.score)) {
-    return { value: top.value, confidence: "medium", candidates: values, uncertain: [] }
+    return { value: top.value, confidence: "medium", candidates: values, uncertain: nearCharacterNote(top) }
   }
   return {
     value: "",
@@ -864,10 +964,10 @@ export function customerFromWindowTitle(
       uncertain: [`客户按聊天窗口标题从「${value}」改为「${pick.value}」，请确认`],
     }
   }
-  const uncertain =
-    pick.candidates.length > 1
-      ? [`客户按聊天窗口标题（人数前的名称）识别为「${pick.value}」，请确认`]
-      : []
+  const uncertain = [...pick.uncertain]
+  if (pick.candidates.length > 1 && !uncertain.length) {
+    uncertain.push(`客户按聊天窗口标题识别为「${pick.value}」，请确认`)
+  }
   return { value: pick.value, uncertain }
 }
 

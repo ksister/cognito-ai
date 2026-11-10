@@ -82,6 +82,44 @@ describe("customer from window title", () => {
   })
 })
 
+describe("private-chat remark title 「标签 公司名 人名」", () => {
+  // Fictional names only. 张三 is one character away from 张叁 on purpose: the person segment
+  // must never be treated as the customer.
+  const remark = parseFeishuTableSchema({
+    version: 1,
+    columns: [
+      {
+        name: "客户公司1",
+        type: "select",
+        key: "customer",
+        extract: true,
+        options: ["宇创", "星河精密", "云帆科技", "张叁"],
+      },
+    ],
+  })
+  const remarkCustomer = remark.columns[0]
+
+  it("matches a one-character OCR error in the company segment and notes it", () => {
+    const applied = customerFromWindowTitle("", "工作 羽创 张三", remarkCustomer)
+    expect(applied.value).toBe("宇创")
+    expect(applied.uncertain.join("\n")).toContain("按相近字匹配，请确认")
+    expect(applied.uncertain.join("\n")).not.toContain("张三")
+  })
+
+  it("prefers an exact segment over a near-character match", () => {
+    expect(customerFromWindowTitle("", "工作 宇创 张三", remarkCustomer)).toEqual({
+      value: "宇创",
+      uncertain: [],
+    })
+  })
+
+  it("never takes the person segment as the customer", () => {
+    const pick = pickCustomerFromTitle("工作 羽创 张三", remarkCustomer)
+    expect(pick.value).toBe("宇创")
+    expect(pick.candidates).toEqual(["宇创"])
+  })
+})
+
 describe("fuzzy customer for OCR near-misses", () => {
   it("maps a one-character OCR error onto the only nearby option", () => {
     expect(fuzzyCustomerOption("星何精密", customer)).toBe("星河精密")
