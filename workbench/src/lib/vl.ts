@@ -1,7 +1,19 @@
-﻿import "server-only"
-import { buildExtractSystem, normalizeExtractedDraft, type FeishuTableSchema } from "./feishu-schema"
+import "server-only"
+import { buildExtractSystem, type FeishuTableSchema } from "./feishu-schema"
 import { loadFeishuSchemaState } from "./feishu-schema-load"
-import { VL_TRANSCRIPT_RULE, VL_TRANSCRIPT_SCHEMA, applyTranscript, parseTranscript } from "./transcript"
+import { extractRecord } from "./ai"
+import {
+  VL_TRANSCRIPT_RULE,
+  VL_TRANSCRIPT_SCHEMA,
+  applyTranscript,
+  failedScreenshotNote,
+  failedScreenshotTurn,
+  formatScreenshotChat,
+  mergeTranscriptList,
+  mergeUncertain,
+  parseTranscript,
+  type TranscriptTurn,
+} from "./transcript"
 import { type ExtractErrorCode, type ExtractResult } from "./types"
 
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY
@@ -161,6 +173,100 @@ export async function compressImageBuffer(
   }
 }
 
+/** Transcribe ONE screenshot; the vision model only outputs the transcript + the window title. */
+export async function transcribeImage(
+  input: Buffer,
+): Promise<{ turns: TranscriptTurn[]; windowTitle: string }> {
+  if (!DASHSCOPE_API_KEY) {
+    throw new VlExtractError("auth", "未配置 DASHSCOPE_API_KEY，无法从截图提取；请改用粘贴文字")
+  }
+  const mime = mimeOf(input)
+  const prompt = `这是微信或飞书聊天的一张截图。只输出 JSON：{"window_title":"截图顶部的聊天窗口标题，如「锴士(12) 鉴泉技术支持」，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。${VL_TRANSCRIPT_RULE} 只转写这一张截图，不要输出客户、问题描述等字段。`
+  let res: Response
+  try {
+    res = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DASHSCOPE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: DASHSCOPE_VL_MODEL,
+        temperature: 0.2,
+        enable_thinking: false,
+        max_tokens: resolveVlMaxTokens(),
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: `data:${mime};base64,${input.toString("base64")}` } },
+              { type: "text", text: prompt },
+            ],
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(resolveVlTimeoutMs()),
+    })
+  } catch (e) {
+    throw vlTransportError(e)
+  }
+  const rawText = await res.text()
+  if (!res.ok) throw mapHttpError(res.status, rawText)
+  let parsedApi: { choices?: Array<{ finish_reason?: string | null; message?: { content?: string } }> }
+  try {
+    parsedApi = JSON.parse(rawText) as typeof parsedApi
+  } catch {
+    throw new VlExtractError("parse_error", "通义 VL 返回无法解析，请改用粘贴文字")
+  }
+  const choice = parsedApi.choices?.[0]
+  const truncated = errorIfTruncated(choice?.finish_reason)
+  if (truncated) throw truncated
+  const text = choice?.message?.content ?? ""
+  const match = text.match(/\{[\s\S]*\}/)
+  if (!match) throw new VlExtractError("parse_error", "通义 VL 未返回 JSON，请改用粘贴文字")
+  let obj: Record<string, unknown>
+  try {
+    obj = JSON.parse(match[0]) as Record<string, unknown>
+  } catch {
+    throw new VlExtractError("parse_error", "通义 VL JSON 解析失败，请改用粘贴文字")
+  }
+  return {
+    turns: parseTranscript(obj.transcript),
+    windowTitle: typeof obj.window_title === "string" ? obj.window_title.trim() : "",
+  }
+}
+
+/** One screenshot's transcription result. */
+export type TranscribedPart = { turns: TranscriptTurn[]; windowTitle: string }
+
+export type TranscriptFailure = { index: number; reason: unknown }
+
+/**
+ * Merge per-image transcription results in image order (T11 review 2).
+ * A screenshot that failed keeps a placeholder line where it would have been and its own
+ * `uncertain` note, so the other screenshots still produce a draft.
+ */
+export function combineTranscribedParts(settled: PromiseSettledResult<TranscribedPart>[]): {
+  turns: TranscriptTurn[]
+  windowTitle: string
+  failures: TranscriptFailure[]
+} {
+  const parts: TranscriptTurn[][] = []
+  const failures: TranscriptFailure[] = []
+  let windowTitle = ""
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") {
+      parts.push(r.value.turns)
+      if (!windowTitle && r.value.windowTitle) windowTitle = r.value.windowTitle
+    } else {
+      failures.push({ index: i + 1, reason: r.reason })
+      parts.push([failedScreenshotTurn(i + 1)])
+    }
+  })
+  return { turns: mergeTranscriptList(parts), windowTitle, failures }
+}
+
 export async function extractFromScreenshots(
   images: Buffer[],
   opts: { customer?: string; me?: string; profile?: string },
@@ -178,92 +284,32 @@ export async function extractFromScreenshots(
   const schemaState = await loadFeishuSchemaState()
   if (!schemaState.ok) throw new VlExtractError("parse_error", schemaState.error)
 
-  const compressed: Buffer[] = []
-  for (const raw of images) {
-    compressed.push(await compressImageBuffer(raw))
+  // 1) compress in parallel, 2) transcribe each image in parallel (D19).
+  // allSettled: one bad screenshot must not throw away the others (T11 review 2).
+  const compressed = await Promise.all(images.map((raw) => compressImageBuffer(raw)))
+  const settled = await Promise.allSettled(compressed.map((buf) => transcribeImage(buf)))
+  const combined = combineTranscribedParts(settled)
+  if (combined.failures.length === settled.length) {
+    // Every screenshot failed: keep the old single-error experience (auth/timeout hints + 改用粘贴).
+    const reason = combined.failures[0].reason
+    if (reason instanceof VlExtractError) throw reason
+    throw new VlExtractError("parse_error", `截图转写失败：${(reason as Error)?.message || "未知错误"}。可改用粘贴文字。`)
   }
-
-  const content: Array<{ type: string; text?: string; image_url?: { url: string } }> = []
-  for (const buf of compressed) {
-    const mime = mimeOf(buf)
-    content.push({
-      type: "image_url",
-      image_url: { url: `data:${mime};base64,${buf.toString("base64")}` },
-    })
-  }
-  const hint = [
-    opts.profile ? `【我的背景】\n${opts.profile}` : "",
-    opts.customer ? `【客户】${opts.customer}` : "",
-    opts.me
-      ? `【我在聊天中的昵称】${opts.me}。截图不显示昵称时，右侧气泡用这个名字，左侧用客户联系人，没有联系人就写「客户」。`
-      : "【昵称】截图不显示昵称时，右侧气泡写「我」，左侧写客户联系人，没有就写「客户」。",
-    `【说明】以上共 ${compressed.length} 张截图，按顺序为同一会话。请先写结构化字段，transcript 放在 JSON 最后，并只输出 JSON。`,
-  ]
-    .filter(Boolean)
-    .join("\n\n")
-  content.push({ type: "text", text: hint })
-
-  let res: Response
-  try {
-    res = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${DASHSCOPE_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: DASHSCOPE_VL_MODEL,
-        temperature: 0.2,
-        max_tokens: resolveVlMaxTokens(),
-        response_format: { type: "json_object" },
-        messages: [
-          {
-            role: "system",
-            content: vlSystemFor(schemaState.schema),
-          },
-          { role: "user", content },
-        ],
-      }),
-      signal: AbortSignal.timeout(resolveVlTimeoutMs()),
-    })
-  } catch (e) {
-    throw vlTransportError(e)
-  }
-
-  const rawText = await res.text()
-  if (!res.ok) throw mapHttpError(res.status, rawText)
-
-  let parsedApi: { choices?: Array<{ finish_reason?: string | null; message?: { content?: string } }> }
-  try {
-    parsedApi = JSON.parse(rawText) as typeof parsedApi
-  } catch {
-    throw new VlExtractError("parse_error", "通义 VL 返回无法解析，请改用粘贴文字")
-  }
-
-  const choice = parsedApi.choices?.[0]
-  const truncated = errorIfTruncated(choice?.finish_reason)
-  if (truncated) throw truncated
-
-  const text = choice?.message?.content ?? ""
-  const match = text.match(/\{[\s\S]*\}/)
-  if (!match) {
-    throw new VlExtractError("parse_error", "通义 VL 未返回 JSON，请改用粘贴文字")
-  }
-
-  let draftObj: Record<string, unknown>
-  try {
-    draftObj = JSON.parse(match[0]) as Record<string, unknown>
-  } catch {
-    throw new VlExtractError("parse_error", "通义 VL JSON 解析失败，请改用粘贴文字")
-  }
-
-  const speakerCtx = { me: opts.me, contact: typeof draftObj.contact === "string" ? draftObj.contact : "" }
-  const extracted = normalizeExtractedDraft(draftObj, schemaState.schema)
-  const transcribed = applyTranscript(draftObj.transcript, extracted.uncertain ?? [], speakerCtx)
+  // 3) merge adjacent overlaps; 4) fields come from the text model (same path as paste)
+  const failures = combined.failures
+  const failureNotes = failures.map((f) => failedScreenshotNote(f.index))
+  const chat = formatScreenshotChat(combined.turns)
+  const forModel = combined.windowTitle ? `${chat}\n\n[聊天窗口标题] ${combined.windowTitle}` : chat
+  const result = await extractRecord(forModel, { customer: opts.customer, me: opts.me, profile: opts.profile })
   return {
-    mode: "ai",
-    draft: { ...extracted, uncertain: transcribed.uncertain, chat: transcribed.chat },
-    transcript: parseTranscript(draftObj.transcript, speakerCtx),
+    ...result,
+    warning: [result.warning, ...failureNotes].filter(Boolean).join("；") || undefined,
+    draft: {
+      ...result.draft,
+      chat,
+      uncertain: mergeUncertain(result.draft.uncertain ?? [], failureNotes),
+    },
+    transcript: combined.turns,
     source: "screenshot",
     imageCount: compressed.length,
   }

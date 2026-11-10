@@ -99,6 +99,8 @@ export type FeishuPushStepResult = {
 
 export type FeishuPushResult = {
   ok: boolean
+  /** Only the save-and-return placeholder carries `pending`; a real push result never does. */
+  pending?: false
   recordId?: string
   /** `created` is a new row. `updated` is the row already stored in feishu_record_id. */
   action?: "created" | "updated"
@@ -107,6 +109,12 @@ export type FeishuPushResult = {
   error?: string
   code?: string | number
 }
+
+/**
+ * Save returns before the background Feishu write finishes (D19).
+ * The UI shows 「写入中」 and polls /api/feishu/status; it must not claim success.
+ */
+export type FeishuPushPending = { pending: true }
 
 /** One line from a screenshot VL transcript, before formatting into `chat`. */
 export type TranscriptTurn = {

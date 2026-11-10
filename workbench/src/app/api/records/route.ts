@@ -1,8 +1,8 @@
 import { createRecord, listRecords, saveScreenshotBatch, updateRecord } from "@/lib/kb"
-import { pushSavedRecord } from "@/lib/feishu-record-push"
-import type { LarkPushResult } from "@/lib/lark-bitable"
+import { recordKey, setFeishuJob } from "@/lib/feishu-jobs"
+import { queueSavedRecordPush } from "@/lib/feishu-record-push"
 import { compressImageBuffer } from "@/lib/vl"
-import type { RecordDraft } from "@/lib/types"
+import type { FeishuPushPending, RecordDraft } from "@/lib/types"
 
 export async function GET() {
   return Response.json(await listRecords())
@@ -72,15 +72,20 @@ export async function POST(req: Request) {
     }
 
     const wantPush = side.push !== false
-    let feishu: LarkPushResult | undefined
+    let feishu: FeishuPushPending | undefined
     if (wantPush) {
-      // Use the saved record: createRecord assigns local_id after the incoming draft.
-      const pushed = await pushSavedRecord(
-        { ...rec, screenshots: rec.screenshots },
-        { companyOption: side.companyOption, handlerOpenIds: side.handlerOpenIds },
-      )
-      Object.assign(rec, pushed.record)
-      feishu = pushed.feishu
+      // D19 save-and-return: the local record is already saved; push to Feishu in the background.
+      // The answer is `{pending:true}` — the write is not done yet, the UI shows 「写入中」
+      // and polls /api/feishu/status. Pushes for one record are queued (T11 review 1).
+      const key = recordKey(rec.customer, rec.file)
+      setFeishuJob(key, "writing")
+      feishu = { pending: true }
+      void queueSavedRecordPush(rec.customer, rec.file, {
+        companyOption: side.companyOption,
+        handlerOpenIds: side.handlerOpenIds,
+      }).catch(() => {
+        // The failure is already recorded in the job status; the local record stays.
+      })
     }
 
     return Response.json({ ...rec, screenshots: rec.screenshots, feishu })

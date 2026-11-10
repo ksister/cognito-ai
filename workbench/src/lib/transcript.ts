@@ -152,6 +152,16 @@ export function transcriptUncertainty(turns: TranscriptTurn[]): string[] {
   return notes
 }
 
+/** Uncertain note for one screenshot whose transcription failed (one bad image must not waste the batch). */
+export function failedScreenshotNote(index: number): string {
+  return `第 ${index} 张截图转写失败，可重新整理或改用粘贴`
+}
+
+/** Placeholder line kept in 原始聊天记录 where the failed screenshot would have been. */
+export function failedScreenshotTurn(index: number): TranscriptTurn {
+  return { speaker: "系统", text: failedScreenshotNote(index), kind: "speech" }
+}
+
 export function mergeUncertain(existing: string[], extra: string[]): string[] {
   const out = [...existing]
   for (const n of extra) {
@@ -183,4 +193,53 @@ export function applyTranscript(
     chat: formatScreenshotChat(turns),
     uncertain: mergeUncertain(uncertain, transcriptUncertainty(turns)),
   }
+}
+
+/** Company/org prefixes that WeChat prepends to the display name, e.g. 「天云_殷杰」. */
+const SPEAKER_COMPANY_PREFIXES = ["天云"]
+
+/**
+ * Strip emoji and company prefixes from a speaker name for MATCHING ONLY.
+ * The raw transcript keeps the original name (it is evidence); never use this to rewrite it.
+ */
+export function normalizeSpeakerName(name: string): string {
+  let s = name.normalize("NFKC")
+  s = s.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, "")
+  s = s.replace(/\s+/g, " ").trim()
+  for (const prefix of SPEAKER_COMPANY_PREFIXES) {
+    if (s.startsWith(`${prefix}_`) || s.startsWith(`${prefix} `)) {
+      const rest = s.slice(prefix.length).replace(/^[_\s]+/, "").trim()
+      if (rest) s = rest
+    }
+  }
+  return s
+}
+
+function turnKey(t: TranscriptTurn): string {
+  return `${normalizeSpeakerName(t.speaker)}|${t.text.replace(/\s+/g, " ").trim()}`
+}
+
+/**
+ * Concatenate per-image transcripts, dropping the messages that appear at the bottom of
+ * one screenshot and again at the top of the next. Pure: same inputs -> same output.
+ */
+export function mergeTranscripts(prev: TranscriptTurn[], next: TranscriptTurn[]): TranscriptTurn[] {
+  if (!prev.length) return [...next]
+  if (!next.length) return [...prev]
+  const max = Math.min(prev.length, next.length)
+  let overlap = 0
+  for (let k = max; k > 0; k--) {
+    const a = prev.slice(prev.length - k).map(turnKey)
+    const b = next.slice(0, k).map(turnKey)
+    if (a.every((v, i) => v === b[i])) {
+      overlap = k
+      break
+    }
+  }
+  return [...prev, ...next.slice(overlap)]
+}
+
+/** Merge a list of per-image transcripts in image order. */
+export function mergeTranscriptList(parts: TranscriptTurn[][]): TranscriptTurn[] {
+  return parts.reduce<TranscriptTurn[]>((acc, part) => mergeTranscripts(acc, part), [])
 }

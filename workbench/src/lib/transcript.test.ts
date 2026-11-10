@@ -7,8 +7,12 @@ import {
   OCR_TRANSCRIPT_MARKER,
   applyTranscript,
   formatScreenshotChat,
+  mergeTranscriptList,
+  mergeTranscripts,
+  normalizeSpeakerName,
   parseTranscript,
   resolveExtractedChat,
+  type TranscriptTurn,
 } from "./transcript"
 import { parseFeishuTableSchema } from "./feishu-schema"
 import {
@@ -221,5 +225,50 @@ describe("saved markdown", () => {
     expect(pasteMd).not.toContain(OCR_TRANSCRIPT_MARKER)
     const pasteLoaded = kb.markdownToRecord("T2Fixture", pasteRec.file, pasteMd)
     expect(pasteLoaded.chat).toBe(pasted)
+  })
+})
+
+describe("normalizeSpeakerName", () => {
+  it("strips emoji", () => {
+    expect(normalizeSpeakerName("Lucas🐻")).toBe("Lucas")
+    expect(normalizeSpeakerName("Lucas🌹🌞💧")).toBe("Lucas")
+  })
+  it("strips the 天云_ / 天云 company prefix", () => {
+    expect(normalizeSpeakerName("天云_殷杰")).toBe("殷杰")
+    expect(normalizeSpeakerName("天云 殷杰")).toBe("殷杰")
+  })
+  it("leaves ordinary names alone", () => {
+    expect(normalizeSpeakerName("Lucas")).toBe("Lucas")
+    expect(normalizeSpeakerName("张工")).toBe("张工")
+  })
+})
+
+describe("mergeTranscripts", () => {
+  const a: TranscriptTurn[] = [
+    { speaker: "Lucas", text: "问题A", kind: "speech" },
+    { speaker: "Lucas", text: "问题B", kind: "speech" },
+    { speaker: "Lucas", text: "问题C", kind: "speech" },
+  ]
+  const b: TranscriptTurn[] = [
+    { speaker: "Lucas", text: "问题B", kind: "speech" },
+    { speaker: "Lucas", text: "问题C", kind: "speech" },
+    { speaker: "Lucas", text: "问题D", kind: "speech" },
+  ]
+  it("drops the overlapping tail/head", () => {
+    expect(mergeTranscripts(a, b).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
+  })
+  it("keeps everything when there is no overlap", () => {
+    const c: TranscriptTurn[] = [{ speaker: "Lucas", text: "问题E", kind: "speech" }]
+    expect(mergeTranscripts(a, c).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题E"])
+  })
+  it("matches through emoji/company-prefix differences", () => {
+    const c: TranscriptTurn[] = [
+      { speaker: "Lucas🐻", text: "问题C", kind: "speech" },
+      { speaker: "天云_殷杰", text: "问题D", kind: "speech" },
+    ]
+    expect(mergeTranscripts(a, c).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
+  })
+  it("merges a list in order", () => {
+    expect(mergeTranscriptList([a, b]).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
   })
 })

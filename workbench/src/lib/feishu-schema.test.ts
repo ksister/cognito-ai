@@ -6,6 +6,7 @@ import {
   applyOptionDiff,
   buildCreateFields,
   buildExtractSystem,
+  mergeExtractParts,
   checkResolutionStatus,
   defaultedUncertain,
   diffColumnOptions,
@@ -246,5 +247,23 @@ describe("defaultedUncertain", () => {
 
   it("returns empty when nothing falls back", () => {
     expect(defaultedUncertain({})).toEqual([])
+  })
+})
+describe("mergeExtractParts", () => {
+  it("合并短字段与长段落", () => {
+    const short = { title: "标题", customer: "锴士", uncertain: ["a"] }
+    const long = { problem: "问题", solution: "方案", needs: [{ pain: "p", idea: "i", type: "软件改进" }] }
+    const merged = mergeExtractParts(short, long)
+    expect(merged.title).toBe("标题")
+    expect(merged.customer).toBe("锴士")
+    expect(merged.problem).toBe("问题")
+    expect(merged.needs).toHaveLength(1)
+  })
+  it("空值不覆盖另一侧的非空值", () => {
+    const short = { title: "标题", customer: "锴士" }
+    const long = { problem: "", solution: "  ", needs: [] }
+    const merged = mergeExtractParts(short, long)
+    expect(merged.problem).toBeUndefined()
+    expect(merged.solution).toBeUndefined()
   })
 })
