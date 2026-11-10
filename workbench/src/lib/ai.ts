@@ -4,6 +4,7 @@ import {
   constrainDraftSelects,
   defaultedUncertain,
   FeishuSchemaError,
+  mergeExtractParts,
   normalizeExtractedDraft,
 } from "./feishu-schema"
 import { loadFeishuSchemaState } from "./feishu-schema-load"
@@ -75,8 +76,13 @@ export async function extractRecord(
     ]
       .filter(Boolean)
       .join("\n\n")
-    const draft = await chatJson<Record<string, unknown>>(buildExtractSystem(schema, "paste"), user)
-    return { mode: "ai", draft: normalizeExtractedDraft(draft, schema), source: "paste" }
+    // D19: two parallel requests — short fields (A) and long paragraphs (B).
+    const [shortPart, longPart] = await Promise.all([
+      chatJson<Record<string, unknown>>(buildExtractSystem(schema, "paste", "short"), user),
+      chatJson<Record<string, unknown>>(buildExtractSystem(schema, "paste", "long"), user),
+    ])
+    const merged = mergeExtractParts(shortPart, longPart)
+    return { mode: "ai", draft: normalizeExtractedDraft(merged, schema), source: "paste" }
   } catch (e) {
     if (e instanceof FeishuSchemaError) throw e
     return {

@@ -875,7 +875,11 @@ function fieldLine(col: FeishuColumn, fallback: string): string {
 }
 
 /** System prompt: select fields carry their allowed options. */
-export function buildExtractSystem(schema: FeishuTableSchema, source: "screenshot" | "paste"): string {
+export function buildExtractSystem(
+  schema: FeishuTableSchema,
+  source: "screenshot" | "paste",
+  group: "short" | "long" | "all" = "all",
+): string {
   const lead =
     source === "screenshot"
       ? "你是一名机器视觉公司的 AE（应用工程师）助理。用户会按时间顺序上传多张微信或飞书的技术支持聊天截图，你要合并为同一会话，整理成结构化的技术支持记录。"
@@ -884,24 +888,33 @@ export function buildExtractSystem(schema: FeishuTableSchema, source: "screensho
   const lines: string[] = []
   const emitted = new Set<string>()
 
+  const longKeys = new Set<string>(["problem", "process", "solution"])
   for (const item of LOCAL_NARRATIVE) {
     const col = columnByKey(schema, item.key)
     if (col && !col.extract) continue
+    if (group === "short" && longKeys.has(item.key)) continue
+    if (group === "long" && !longKeys.has(item.key)) continue
     emitted.add(item.key)
     lines.push(col ? fieldLine(col, item.desc) : `  "${item.key}": "${item.desc}"`)
   }
 
-  for (const col of schema.columns) {
-    if (!col.extract || !col.key || emitted.has(col.key) || col.key === "needs" || col.key === "case_visibility") continue
-    if (col.type === "person" || col.type === "attachment") continue
-    emitted.add(col.key)
-    lines.push(fieldLine(col, "未知 null"))
+  if (group !== "long") {
+    for (const col of schema.columns) {
+      if (!col.extract || !col.key || emitted.has(col.key) || col.key === "needs" || col.key === "case_visibility") continue
+      if (col.type === "person" || col.type === "attachment") continue
+      emitted.add(col.key)
+      lines.push(fieldLine(col, "未知 null"))
+    }
   }
 
-  lines.push(
-    `  "needs": [{"pain": "用户痛点", "idea": "改进或工具想法", "type": "${NEED_TYPES.join("|")}"}]`,
-  )
-  lines.push(`  "uncertain": ["需要人工确认的点"]`)
+  if (group !== "short") {
+    lines.push(
+      `  "needs": [{"pain": "用户痛点", "idea": "改进或工具想法", "type": "${NEED_TYPES.join("|")}"}]`,
+    )
+  }
+  if (group !== "long") {
+    lines.push(`  "uncertain": ["需要人工确认的点"]`)
+  }
 
   return `${lead}
 
@@ -950,6 +963,21 @@ function assignExtracted(out: Partial<RecordDraft>, extras: Record<string, strin
 }
 
 /** Keep select values only when they are configured options; otherwise blank + uncertain. */
+/** Merge the two parallel extraction results (short fields + long paragraphs); empty values never overwrite. */
+export function mergeExtractParts(
+  shortPart: Record<string, unknown>,
+  longPart: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...shortPart }
+  for (const [key, value] of Object.entries(longPart)) {
+    if (value == null) continue
+    if (typeof value === "string" && !value.trim()) continue
+    if (Array.isArray(value) && value.length === 0) continue
+    merged[key] = value
+  }
+  return merged
+}
+
 export function normalizeExtractedDraft(
   raw: Record<string, unknown>,
   schema: FeishuTableSchema,
