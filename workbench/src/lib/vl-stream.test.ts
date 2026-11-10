@@ -53,7 +53,7 @@ function stubVision(plans: Record<string, Plan>) {
 describe("extractFromScreenshotsStream", () => {
   it("pushes the transcript as soon as each screenshot is done", async () => {
     stubVision({
-      A: { delay: 5, text: "第一张说的话", title: "锴士(12) 鉴泉技术支持" },
+      A: { delay: 5, text: "第一张说的话", title: "示例客户(12) 示例科技技术支持" },
       B: { delay: 30, text: "第二张说的话" },
       C: { delay: 60, text: "第三张说的话" },
     })
@@ -66,7 +66,7 @@ describe("extractFromScreenshotsStream", () => {
     expect(events[1].chat).toContain("客户：第二张说的话")
     expect(events[2].chat).toContain("客户：第三张说的话")
     expect(events[0].total).toBe(3)
-    expect(events[0].windowTitle).toBe("锴士(12) 鉴泉技术支持")
+    expect(events[0].windowTitle).toBe("示例客户(12) 示例科技技术支持")
   })
 
   it("keeps image order when a later screenshot finishes first", async () => {

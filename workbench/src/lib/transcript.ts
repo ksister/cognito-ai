@@ -9,7 +9,7 @@ const SPEAKER_KEYS = ["speaker", "发言人", "name", "who", "role"] as const
 const TEXT_KEYS = ["text", "内容", "content", "message", "line"] as const
 
 export const VL_TRANSCRIPT_RULE =
-  "transcript 是截图中的逐字转写，按上传顺序合并为同一段对话，并且必须是 JSON 的最后一个字段。不要摘要、不要改写、不要补全看不清的字。每一句一条。text 保留数字、型号、报错原文。看不清的字用 □，不要猜。不要自己添加「[OCR 转写，以截图为准]」这一行。截图不显示昵称时按气泡位置判断：右侧 speaker 用调用方给出的本人昵称，没有则写「我」，side 填 right；左侧 speaker 用 contact，没有则写「客户」，side 填 left。时间分隔不要带 speaker，kind 填 time，text 写成单独一行「—— 10月28日 09:12 ——」。图片的 text 写「[图片]」，文件写「[文件] 文件名」，语音写「[语音]」，speaker 仍是发出该条的人。"
+  "transcript 是截图中的逐字转写，按上传顺序合并为同一段对话，并且必须是 JSON 的最后一个字段。不要摘要、不要改写、不要补全看不清的字。每一句一条。text 保留数字、型号、报错原文。识别不出的字不要写出来、不要猜，绝对不要输出 □、� 或其它乱码；整行都看不清就不输出这一行。所有表情和贴纸一律写成「[表情]」，不要输出 emoji 字符。不要自己添加「[OCR 转写，以截图为准]」这一行。截图不显示昵称时按气泡位置判断：右侧 speaker 用调用方给出的本人昵称，没有则写「我」，side 填 right；左侧 speaker 用 contact，没有则写「客户」，side 填 left。时间分隔不要带 speaker，kind 填 time，text 写成单独一行「—— 10月28日 09:12 ——」。图片的 text 写「[图片]」，文件写「[文件] 文件名」，语音写「[语音]」，speaker 仍是发出该条的人。"
 
 export const VL_TRANSCRIPT_SCHEMA =
   '"transcript": [{"speaker": "昵称；无昵称时右侧写我、左侧写客户", "side": "left|right|空", "kind": "speech|time", "text": "原文，或 —— 10月28日 09:12 ——，或 [图片] / [文件] 文件名 / [语音]"}]'
@@ -17,6 +17,62 @@ export const VL_TRANSCRIPT_SCHEMA =
 export type SpeakerContext = {
   me?: string
   contact?: string
+}
+
+const EMOJI_PIECE = String.raw`(?:\p{Emoji_Presentation}(?:\uFE0F|\p{Emoji_Modifier})?|\p{Extended_Pictographic}\uFE0F)`
+/** One visual emoji: emoji-presentation char, VS16 sequence, ZWJ family, skin tone, flag or keycap. */
+const EMOJI_RUN = new RegExp(
+  String.raw`(?:\p{Regional_Indicator}{2}|[0-9#*]\uFE0F?\u20E3|${EMOJI_PIECE}(?:\u200D${EMOJI_PIECE})*)`,
+  "gu",
+)
+
+/** Tofu/garbled glyphs the VL model sometimes emits for characters it cannot read. */
+const GARBLED = /[\uFFFD\u25A1\u25A2\u25AF\u2B1B\u2B1C]/g
+
+export const EMOJI_PLACEHOLDER = "[表情]"
+
+/**
+ * Transcript text cleanup (T18): emoji become 「[表情]」, unreadable glyphs are dropped instead of
+ * saved as 「□」/「�」. Only display/save text is touched; speaker names stay as evidence.
+ */
+export function normalizeTranscriptText(input: string): string {
+  if (!input) return ""
+  let s = input.replace(EMOJI_RUN, EMOJI_PLACEHOLDER)
+  s = s.replace(GARBLED, "")
+  s = s.replace(/[\u200B-\u200D\uFE0F]/g, "")
+  return s.replace(/[ \t]{2,}/g, " ").trim()
+}
+
+/**
+ * Clean the window title the VL model read from the top of a chat screenshot.
+ * Drops the clock/status prefix and trailing ellipsis; the title is a customer clue, never a message.
+ */
+export function cleanWindowTitle(raw: string): string {
+  let s = String(raw ?? "")
+    .split(/\r?\n/)[0]
+    .normalize("NFKC")
+    .trim()
+  s = s.replace(/^\d{1,2}:\d{2}(?::\d{2})?\s*/, "")
+  s = s.replace(/^[^\p{L}\p{N}]+/u, "")
+  s = s.replace(/\s*[.…]+$/, "")
+  s = s.replace(GARBLED, "").replace(/[\u200B-\u200D\uFE0F]/g, "")
+  s = s.replace(/\s{2,}/g, " ").trim()
+  return s.slice(0, 80)
+}
+
+function titleKey(s: string): string {
+  return s
+    .normalize("NFKC")
+    .replace(/[（(]\s*\d{1,3}\s*[)）]/g, "")
+    .replace(/[\s\u3000·・.,，、;；:：\-—_|/\\()（）\[\]【】"'“”‘’]/g, "")
+    .toLowerCase()
+}
+
+/** Drop a transcript line that is just the window title copied as a message (T18). */
+export function dropTitleTurns(turns: TranscriptTurn[], windowTitle: string): TranscriptTurn[] {
+  const title = titleKey(cleanWindowTitle(windowTitle))
+  if (!title) return [...turns]
+  return turns.filter((turn) => titleKey(turn.text) !== title)
 }
 
 const TIME_LINE = /^(?:——|--)\s*(.+?)\s*(?:——|--)$/
@@ -132,7 +188,7 @@ function isTimeTurn(t: TranscriptTurn): boolean {
 export function formatScreenshotChat(turns: TranscriptTurn[]): string {
   const lines: string[] = []
   for (const t of turns) {
-    const text = t.text.replace(/\s*\n\s*/g, " ").trim()
+    const text = normalizeTranscriptText(t.text.replace(/\s*\n\s*/g, " "))
     if (!text || text === OCR_TRANSCRIPT_MARKER) continue
     if (isTimeTurn(t)) {
       lines.push(formatTimeSeparator(text))
@@ -216,7 +272,7 @@ export function normalizeSpeakerName(name: string): string {
 }
 
 function turnKey(t: TranscriptTurn): string {
-  return `${normalizeSpeakerName(t.speaker)}|${t.text.replace(/\s+/g, " ").trim()}`
+  return `${normalizeSpeakerName(t.speaker)}|${normalizeTranscriptText(t.text).replace(/\s+/g, " ").trim()}`
 }
 
 /**

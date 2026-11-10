@@ -34,7 +34,7 @@ function visionResponse(body: { messages?: { content?: { type?: string; image_ur
     choices: [
       {
         finish_reason: "stop",
-        message: { content: JSON.stringify({ window_title: "锴士(12) 鉴泉技术支持", transcript }) },
+        message: { content: JSON.stringify({ window_title: "示例客户(12) 示例科技技术支持", transcript }) },
       },
     ],
   })
