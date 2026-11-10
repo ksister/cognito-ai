@@ -980,8 +980,6 @@ export async function getLarkMeta(): Promise<{
   code?: string | number
   options: LarkSelectOptions
   handlers: LarkHandler[]
-  baseToken: string
-  tableId: string
   mode: "cli" | "api"
   cliPath?: string
 }> {
@@ -996,8 +994,6 @@ export async function getLarkMeta(): Promise<{
       code: "lark_base_unconfigured",
       options: empty,
       handlers,
-      baseToken: cfg.baseToken,
-      tableId: cfg.tableId,
       mode: cfg.pushMode,
     }
   }
@@ -1011,8 +1007,6 @@ export async function getLarkMeta(): Promise<{
         code: "cli_missing",
         options: empty,
         handlers,
-        baseToken: cfg.baseToken,
-        tableId: cfg.tableId,
         mode: "cli",
       }
     }
@@ -1022,8 +1016,6 @@ export async function getLarkMeta(): Promise<{
         configured: true,
         options: optionsFromFields(fields),
         handlers,
-        baseToken: cfg.baseToken,
-        tableId: cfg.tableId,
         mode: "cli",
         cliPath: resolved.path,
       }
@@ -1035,8 +1027,6 @@ export async function getLarkMeta(): Promise<{
         code: err.code,
         options: empty,
         handlers,
-        baseToken: cfg.baseToken,
-        tableId: cfg.tableId,
         mode: "cli",
         cliPath: resolved.path,
       }
@@ -1051,8 +1041,6 @@ export async function getLarkMeta(): Promise<{
       error: auth.error,
       options: empty,
       handlers,
-      baseToken: cfg.baseToken,
-      tableId: cfg.tableId,
       mode: "api",
     }
   }
@@ -1062,8 +1050,6 @@ export async function getLarkMeta(): Promise<{
       configured: true,
       options: optionsFromFields(fields),
       handlers,
-      baseToken: cfg.baseToken,
-      tableId: cfg.tableId,
       mode: "api",
     }
   } catch (e) {
@@ -1074,8 +1060,6 @@ export async function getLarkMeta(): Promise<{
       code: err.code,
       options: empty,
       handlers,
-      baseToken: cfg.baseToken,
-      tableId: cfg.tableId,
       mode: "api",
     }
   }
