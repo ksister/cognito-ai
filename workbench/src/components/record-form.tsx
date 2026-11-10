@@ -687,6 +687,14 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
             </span>
           </div>
 
+          {extracting && (
+            <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              {shots.length > 0 && !d.chat.trim()
+                ? `正在转写 ${shots.length} 张截图并整理字段（约 20 秒），请稍候…`
+                : "正在整理字段（约 20 秒），请稍候…"}
+            </p>
+          )}
+
           {vlError && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
               <p className="font-medium">截图提取失败</p>
