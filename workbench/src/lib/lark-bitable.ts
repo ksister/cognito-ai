@@ -10,6 +10,7 @@ import {
   type FeishuTableSchema,
 } from "./feishu-schema"
 import { readFeishuTableSchema } from "./feishu-schema-load"
+import { KB_ROOT } from "./kb"
 import {
   RECORD_NOT_READY_DELAY_MS,
   cliRelativeFile,
@@ -667,18 +668,28 @@ export async function addCustomerOption(name: string): Promise<
   const fieldMeta = (listed?.data?.fields ?? listed?.data?.items ?? []).find(
     (f) => f.id === col.fieldId || f.name === col.name,
   )
-  const currentOptions = (fieldMeta?.options ?? [])
-    .map((o) => o.name)
-    .filter((n): n is string => Boolean(n))
-  const baseOptions = currentOptions.length ? currentOptions : col.options
-  if (baseOptions.includes(trimmed)) return { ok: true, options: baseOptions }
+  const listedOptions = (fieldMeta?.options ?? []) as Array<{
+    hue?: string
+    lightness?: string
+    name?: string
+  }>
+  if (!listedOptions.length) {
+    return {
+      error: "读不到飞书当前选项（字段为空或格式变化），已停止；不会用本地配置覆盖飞书（D16）",
+      code: "feishu_options_unreadable",
+    }
+  }
+  const currentNames = listedOptions.map((o) => o.name).filter((n): n is string => Boolean(n))
+  if (currentNames.includes(trimmed)) return { ok: true, options: currentNames }
 
-  const nextOptions = [...baseOptions, trimmed]
+  const nextOptions = [...currentNames, trimmed]
   const definition = {
     name: col.name,
     type: "select",
     multiple: false,
-    options: nextOptions.map((n) => ({ name: n })),
+    // Preserve each existing option object verbatim (hue/lightness/name) so colors and
+    // record references survive; only append the new name at the end.
+    options: [...listedOptions, { name: trimmed }],
   }
   const args = [
     "base",
@@ -704,8 +715,7 @@ export async function addCustomerOption(name: string): Promise<
   }
 
   // Sync the private config so the next form load shows the new option.
-  const kbRoot = path.resolve(process.env.KB_DIR ?? path.join(process.cwd(), ".."))
-  const configPath = path.join(kbRoot, "config", "feishu-table.json")
+  const configPath = path.join(KB_ROOT, "config", "feishu-table.json")
   try {
     const raw = JSON.parse(await fs.readFile(configPath, "utf8")) as {
       columns?: Array<Record<string, unknown>>
