@@ -89,6 +89,75 @@ export async function extractRecord(
 
 type Msg = { who: string; text: string; date?: string }
 
+/**
+ * Re-organize fields from the transcript + the user's per-uncertain notes.
+ * Only fields change; 原始聊天记录 (chat) and 我的思考 (thoughts) stay untouched (D6).
+ */
+export async function reorganizeRecord(
+  chat: string,
+  notes: string[],
+  base: RecordDraft,
+): Promise<ExtractResult> {
+  const schemaState = await loadFeishuSchemaState()
+  if (!schemaState.ok) throw new FeishuSchemaError(schemaState.error)
+  const schema = schemaState.schema
+  if (!API_KEY) {
+    return {
+      mode: "rules",
+      draft: base,
+      warning: "未配置 AI_API_KEY，无法按说明重新整理",
+      source: "paste",
+    }
+  }
+  try {
+    const noteText = notes
+      .map((n) => n.trim())
+      .filter(Boolean)
+      .map((n, i) => `${i + 1}. ${n}`)
+      .join("\n")
+    const baseFields = {
+      title: base.title,
+      customer: base.customer,
+      contact: base.contact,
+      product: base.product,
+      status: base.status,
+      problem: base.problem,
+      process: base.process,
+      solution: base.solution,
+      site: base.site,
+      support_type: base.support_type,
+      resolution: base.resolution,
+      fixed_version: base.fixed_version,
+      dimensions: base.dimensions,
+      inspection_types: base.inspection_types,
+      industries: base.industries,
+    }
+    const user = [
+      `【原始聊天记录】\n${chat.slice(0, 30000)}`,
+      noteText ? `【用户补充说明】（按这些说明修正字段）\n${noteText}` : "",
+      `【当前草稿】（在此基础上按说明修正）\n${JSON.stringify(baseFields)}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+    const system = `${buildExtractSystem(schema, "paste")}\n\n【本次任务】用户逐条给出了补充说明，请按说明修正字段；「原始聊天记录」保持不变，不要输出 chat 字段，也不要改「我的思考」。`
+    const draft = await chatJson<Record<string, unknown>>(system, user)
+    const normalized = normalizeExtractedDraft(draft, schema)
+    return {
+      mode: "ai",
+      draft: { ...normalized, chat: base.chat, thoughts: base.thoughts },
+      source: "paste",
+    }
+  } catch (e) {
+    if (e instanceof FeishuSchemaError) throw e
+    return {
+      mode: "rules",
+      draft: base,
+      warning: `AI 调用失败（${(e as Error).message}），未改动字段。`,
+      source: "paste",
+    }
+  }
+}
+
 const HEADER_PATTERNS: RegExp[] = [
   /^(.{1,24}?)\s+(\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?)\s+\d{1,2}:\d{2}(:\d{2})?$/,
   /^(.{1,24}?)\s+(\d{1,2}月\d{1,2}日)\s+\d{1,2}:\d{2}$/,

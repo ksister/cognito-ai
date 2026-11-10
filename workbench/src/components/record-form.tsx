@@ -217,6 +217,41 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
       setAddingCustomer(false)
     }
   }
+
+  const [notes, setNotes] = useState<string[]>([])
+  const [reorganizing, setReorganizing] = useState(false)
+
+  async function reorganize() {
+    const filled = notes.map((n) => n.trim()).filter(Boolean)
+    if (!filled.length) {
+      toast.error("请先在不确认项后面写下说明")
+      return
+    }
+    setReorganizing(true)
+    try {
+      const res = await fetch("/api/reorganize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat: d.chat, notes: filled, draft: d }),
+      })
+      const json = (await res.json()) as { draft?: RecordDraft; warning?: string; error?: string }
+      if (!res.ok || json.error) {
+        toast.error(json.error || "重新整理失败")
+        return
+      }
+      if (json.draft) {
+        // Only fields change; chat and thoughts stay as they were (D6).
+        setD((p) => ({ ...p, ...json.draft, chat: p.chat, thoughts: p.thoughts }))
+        setConfirmed(false)
+        toast.success("已按说明重新整理，请重新确认")
+      }
+      if (json.warning) toast(json.warning)
+    } catch (e) {
+      toast.error(`重新整理失败：${(e as Error).message}`)
+    } finally {
+      setReorganizing(false)
+    }
+  }
   const setNeed = (i: number, patch: Partial<Need>) =>
     set("needs", d.needs.map((n, j) => (j === i ? { ...n, ...patch } : n)))
 
@@ -736,18 +771,38 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 <p className="rounded-lg bg-background/70 p-2 text-sm text-amber-950">{consistencyHint}</p>
               )}
               {d.uncertain.map((u, i) => (
-                <div key={i} className="flex items-start gap-2 rounded-lg bg-background/70 p-2 text-sm">
-                  <span className="flex-1">{u}</span>
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    aria-label="已核对"
-                    onClick={() => set("uncertain", d.uncertain.filter((_, j) => j !== i))}
-                  >
-                    <Check />
-                  </Button>
+                <div key={i} className="space-y-1 rounded-lg bg-background/70 p-2 text-sm">
+                  <div className="flex items-start gap-2">
+                    <span className="flex-1">{u}</span>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label="已核对"
+                      onClick={() => set("uncertain", d.uncertain.filter((_, j) => j !== i))}
+                    >
+                      <Check />
+                    </Button>
+                  </div>
+                  <Input
+                    value={notes[i] ?? ""}
+                    placeholder="在这里写说明，如：客户是镭创"
+                    onChange={(e) =>
+                      setNotes((prev) => {
+                        const next = [...prev]
+                        next[i] = e.target.value
+                        return next
+                      })
+                    }
+                  />
                 </div>
               ))}
+              {d.uncertain.length > 0 && (
+                <div className="pt-1">
+                  <Button type="button" variant="outline" onClick={reorganize} disabled={reorganizing}>
+                    {reorganizing ? "整理中…" : "按说明重新整理"}
+                  </Button>
+                </div>
+              )}
               <div className="flex flex-wrap gap-2 pt-1">
                 <Button
                   type="button"
