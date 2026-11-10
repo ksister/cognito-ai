@@ -667,6 +667,211 @@ function matchSelect(col: FeishuColumn, value: string): string {
   return ""
 }
 
+const COMPANY_SUFFIXES = ["股份有限公司", "有限公司", "科技集团", "集团", "科技", "公司"]
+
+/** Company name text used for title/near-character matching. Punctuation and spaces never matter. */
+export function normalizeCompanyText(name: string): string {
+  return String(name ?? "")
+    .normalize("NFKC")
+    .replace(/[\s\u3000·・.,，、;；:：\-—_|/\\()（）\[\]【】"'“”‘’]/g, "")
+    .toLowerCase()
+}
+
+/** Drop legal-form suffixes so 「星河科技」 and alias 「星河」 compare equal. */
+export function companyCore(name: string): string {
+  let s = normalizeCompanyText(name)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const suffix of COMPANY_SUFFIXES) {
+      if (s.length > suffix.length + 1 && s.endsWith(suffix)) {
+        s = s.slice(0, -suffix.length)
+        changed = true
+      }
+    }
+  }
+  return s
+}
+
+/** Levenshtein distance with an early exit once it is known to exceed `max`. */
+export function editDistanceAtMost(a: string, b: string, max: number): boolean {
+  if (Math.abs(a.length - b.length) > max) return false
+  if (a === b) return true
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    let rowMin = i
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+      rowMin = Math.min(rowMin, cur[j])
+    }
+    if (rowMin > max) return false
+    prev = cur
+  }
+  return prev[b.length] <= max
+}
+
+/**
+ * Map a name the model read from a blurry screenshot onto the only option one character away
+ * (T18: OCR 把「星河」认成「星何」). Only the customer column uses this, and only when exactly one
+ * option is within one edit; two near candidates stay unresolved (D8, no guessing).
+ */
+export function fuzzyCustomerOption(text: string, customer: FeishuColumn | undefined): string {
+  if (!customer || customer.type !== "select") return ""
+  const needle = normalizeCompanyText(text)
+  if (needle.length < 2) return ""
+  const skip = new Set(customer.aiSkip ?? [])
+  const hits = new Set<string>()
+  for (const option of customer.options) {
+    if (!option || skip.has(option)) continue
+    const forms = [normalizeCompanyText(option), companyCore(option)]
+    for (const form of forms) {
+      if (!form || Math.abs(form.length - needle.length) > 1) continue
+      if (form !== needle && editDistanceAtMost(needle, form, 1)) {
+        hits.add(option)
+        break
+      }
+    }
+  }
+  return hits.size === 1 ? [...hits][0] : ""
+}
+
+export type CustomerTitleCandidate = {
+  value: string
+  at: number
+  score: number
+  reasons: string[]
+}
+
+const SUPPORT_SUFFIX = /^(技术支持|技术服务|技术交流|技术支持群|服务群|项目群|对接群|客户群|沟通群)/
+
+/**
+ * Customer options (and their aliases) that occur in a chat window title.
+ * A WeChat group title usually looks like 「客户名(人数) 我方公司技术支持」:
+ * the name before the member count is the customer; the name next to 技术支持 is us.
+ */
+export function customerCandidatesInTitle(
+  title: string,
+  customer: FeishuColumn | undefined,
+): CustomerTitleCandidate[] {
+  if (!customer || customer.type !== "select") return []
+  const text = String(title ?? "").normalize("NFKC").replace(/\s+/g, "")
+  if (!text) return []
+  const skip = new Set(customer.aiSkip ?? [])
+  const entries: { needle: string; value: string }[] = []
+  for (const option of customer.options) {
+    if (!option || skip.has(option)) continue
+    entries.push({ needle: option, value: option })
+    const compact = normalizeCompanyText(option)
+    if (compact && compact !== option) entries.push({ needle: compact, value: option })
+    const core = companyCore(option)
+    if (core && core !== compact) entries.push({ needle: core, value: option })
+  }
+  for (const [alias, option] of Object.entries(customer.aliases ?? {})) {
+    if (!option || skip.has(option) || !customer.options.includes(option)) continue
+    entries.push({ needle: String(alias), value: option })
+    const compact = normalizeCompanyText(alias)
+    if (compact && compact !== alias) entries.push({ needle: compact, value: option })
+  }
+
+  const best = new Map<string, CustomerTitleCandidate>()
+  for (const entry of entries) {
+    if (entry.needle.length < 2) continue
+    let from = 0
+    while (from <= text.length - entry.needle.length) {
+      const at = text.indexOf(entry.needle, from)
+      if (at < 0) break
+      from = at + 1
+      const after = text.slice(at + entry.needle.length)
+      const beforeCount = /^[（(]\d{1,3}[)）]/.test(after)
+      const firstToken = at === 0
+      const nearSupport = SUPPORT_SUFFIX.test(after)
+      const score = (beforeCount ? 100 : 0) + (firstToken ? 20 : 0) - (nearSupport ? 40 : 0)
+      const reasons = [
+        beforeCount ? "人数前" : "",
+        firstToken ? "标题开头" : "",
+        nearSupport ? "紧邻技术支持（我方）" : "",
+      ].filter(Boolean)
+      const prev = best.get(entry.value)
+      if (!prev || score > prev.score || (score === prev.score && at < prev.at)) {
+        best.set(entry.value, { value: entry.value, at, score, reasons })
+      }
+    }
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score || a.at - b.at)
+}
+
+export type CustomerTitlePick = {
+  value: string
+  confidence: "high" | "medium" | "low"
+  candidates: string[]
+  uncertain: string[]
+}
+
+/** Pick the customer from the window title. Empty means "not confident enough" (D8). */
+export function pickCustomerFromTitle(
+  title: string,
+  customer: FeishuColumn | undefined,
+): CustomerTitlePick {
+  const candidates = customerCandidatesInTitle(title, customer)
+  if (!candidates.length) return { value: "", confidence: "low", candidates: [], uncertain: [] }
+  const top = candidates[0]
+  const second = candidates[1]
+  const values = candidates.map((c) => c.value)
+  if (top.score >= 100 && (!second || top.score > second.score)) {
+    return { value: top.value, confidence: "high", candidates: values, uncertain: [] }
+  }
+  if (candidates.length === 1) {
+    return { value: top.value, confidence: "medium", candidates: values, uncertain: [] }
+  }
+  if (top.score >= 20 && (!second || top.score > second.score)) {
+    return { value: top.value, confidence: "medium", candidates: values, uncertain: [] }
+  }
+  return {
+    value: "",
+    confidence: "low",
+    candidates: values,
+    uncertain: [`聊天窗口标题里有多个公司名（${values.join("、")}），未自动选择客户，请人工确认`],
+  }
+}
+
+/**
+ * Let the window title fill or correct the customer field (T18).
+ * Only overrides a model value that is itself another company from the same title (usually our own
+ * company next to 技术支持), and only when the title pick is high confidence.
+ */
+export function customerFromWindowTitle(
+  current: string,
+  windowTitle: string,
+  customer: FeishuColumn | undefined,
+): { value: string; uncertain: string[] } {
+  const title = String(windowTitle ?? "").trim()
+  if (!title || !customer) return { value: "", uncertain: [] }
+  const pick = pickCustomerFromTitle(title, customer)
+  const value = current.trim()
+  if (!pick.value) {
+    return { value: "", uncertain: value ? [] : pick.uncertain }
+  }
+  if (value === pick.value) return { value: pick.value, uncertain: [] }
+  if (value) {
+    // Only correct a model value that is itself another company in the same title
+    // (typically our own company next to 技术支持). A value the model read from the chat stays.
+    const inTitle = customerCandidatesInTitle(title, customer).some((c) => c.value === value)
+    if (!inTitle || pick.confidence !== "high") return { value: "", uncertain: [] }
+    return {
+      value: pick.value,
+      uncertain: [`客户按聊天窗口标题从「${value}」改为「${pick.value}」，请确认`],
+    }
+  }
+  const uncertain =
+    pick.candidates.length > 1
+      ? [`客户按聊天窗口标题（人数前的名称）识别为「${pick.value}」，请确认`]
+      : []
+  return { value: pick.value, uncertain }
+}
+
+
 export function writeRecordField<T extends FieldSource>(draft: T, key: string, value: string): T {
   if (key === "needs" || RESERVED_KEYS.has(key)) return draft
   if (isRecordTextKey(key)) return { ...draft, [key]: value }
@@ -1016,6 +1221,12 @@ export function normalizeExtractedDraft(
       const hit = matchSelect(col, text)
       if (hit) assignExtracted(out, extras, col.key, hit)
       else if (text) {
+        const fuzzy = col.key === "customer" ? fuzzyCustomerOption(text, col) : ""
+        if (fuzzy) {
+          assignExtracted(out, extras, col.key, fuzzy)
+          uncertain.push(`「${col.name}」按相近字把「${text}」匹配为「${fuzzy}」，请确认`)
+          continue
+        }
         assignExtracted(out, extras, col.key, "")
         const skipped = (col.aiSkip ?? []).includes(text) || (col.aliases?.[text] && (col.aiSkip ?? []).includes(col.aliases[text]))
         uncertain.push(

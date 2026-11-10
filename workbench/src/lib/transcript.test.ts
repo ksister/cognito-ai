@@ -6,10 +6,13 @@ import { emptyDraft } from "./types"
 import {
   OCR_TRANSCRIPT_MARKER,
   applyTranscript,
+  cleanWindowTitle,
+  dropTitleTurns,
   formatScreenshotChat,
   mergeTranscriptList,
   mergeTranscripts,
   normalizeSpeakerName,
+  normalizeTranscriptText,
   parseTranscript,
   resolveExtractedChat,
   type TranscriptTurn,
@@ -166,6 +169,47 @@ describe("VL transcript", () => {
     )
     expect(fallback).toBe([OCR_TRANSCRIPT_MARKER, "我：在", "客户：好"].join("\n"))
     expect(applyTranscript([{ side: "left", text: "好" }], []).uncertain).toEqual([])
+  })
+})
+
+describe("transcript cleanup (T18)", () => {
+  it("writes emoji and stickers as [表情] and never saves 乱码", () => {
+    expect(normalizeTranscriptText("好的🌞🐯🐯")).toBe("好的[表情][表情][表情]")
+    expect(normalizeTranscriptText("👍🏽 🇨🇳 1️⃣ 👨‍👩‍👧‍👦")).toBe("[表情] [表情] [表情] [表情]")
+    expect(normalizeTranscriptText("型号 A7□ 报错\uFFFD")).toBe("型号 A7 报错")
+
+    const chat = formatScreenshotChat([
+      { speaker: "客户", text: "好的🌞" },
+      { speaker: "客户", text: "□□" },
+    ])
+    expect(chat).toBe([OCR_TRANSCRIPT_MARKER, "客户：好的[表情]"].join("\n"))
+    expect(chat).not.toMatch(/[□\uFFFD]/)
+  })
+
+  it("cleans the clock/status prefix out of the window title", () => {
+    expect(cleanWindowTitle("10:23 示例客户(12) 示例科技技术支持 …")).toBe("示例客户(12) 示例科技技术支持")
+    expect(cleanWindowTitle("示例客户(12) 示例科技技术支持")).toBe("示例客户(12) 示例科技技术支持")
+    expect(cleanWindowTitle("")).toBe("")
+  })
+
+  it("drops a title line that the model copied as a message", () => {
+    const title = "示例客户(12) 示例科技技术支持"
+    const turns: TranscriptTurn[] = [
+      { speaker: "客户", text: title, kind: "speech" },
+      { speaker: "客户", text: "定位偏了 0.3mm", kind: "speech" },
+    ]
+    expect(dropTitleTurns(turns, title).map((t) => t.text)).toEqual(["定位偏了 0.3mm"])
+    expect(dropTitleTurns(turns, "其他标题")).toHaveLength(2)
+  })
+
+  it("tells the model not to emit □ and to use [表情]", () => {
+    const example = parseFeishuTableSchema(
+      JSON.parse(readFileSync(path.join(process.cwd(), "config", "feishu-table.example.json"), "utf8")),
+    )
+    const system = vlSystemFor(example)
+    expect(system).toContain("[表情]")
+    expect(system).toContain("乱码")
+    expect(system).not.toContain("用 □")
   })
 })
 

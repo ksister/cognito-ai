@@ -1,12 +1,18 @@
 import "server-only"
-import { buildExtractSystem, type FeishuTableSchema } from "./feishu-schema"
+import {
+  buildExtractSystem,
+  customerFromWindowTitle,
+  type FeishuTableSchema,
+} from "./feishu-schema"
 import { loadFeishuSchemaState } from "./feishu-schema-load"
 import { extractRecord } from "./ai"
 import {
   VL_TRANSCRIPT_RULE,
   VL_TRANSCRIPT_SCHEMA,
   applyTranscript,
+  cleanWindowTitle,
   completedPrefix,
+  dropTitleTurns,
   failedScreenshotNote,
   failedScreenshotTurn,
   formatScreenshotChat,
@@ -182,7 +188,7 @@ export async function transcribeImage(
     throw new VlExtractError("auth", "未配置 DASHSCOPE_API_KEY，无法从截图提取；请改用粘贴文字")
   }
   const mime = mimeOf(input)
-  const prompt = `这是微信或飞书聊天的一张截图。只输出 JSON：{"window_title":"截图顶部的聊天窗口标题，如「锴士(12) 鉴泉技术支持」，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。${VL_TRANSCRIPT_RULE} 只转写这一张截图，不要输出客户、问题描述等字段。`
+  const prompt = `这是微信或飞书聊天的一张截图。只输出 JSON：{"window_title":"截图顶部的聊天窗口标题，如「示例客户(12) 我方公司技术支持」，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。${VL_TRANSCRIPT_RULE} 只转写这一张截图，不要输出客户、问题描述等字段。`
   let res: Response
   try {
     res = await fetch(`${DASHSCOPE_BASE_URL}/chat/completions`, {
@@ -234,7 +240,7 @@ export async function transcribeImage(
   }
   return {
     turns: parseTranscript(obj.transcript),
-    windowTitle: typeof obj.window_title === "string" ? obj.window_title.trim() : "",
+    windowTitle: cleanWindowTitle(typeof obj.window_title === "string" ? obj.window_title : ""),
   }
 }
 
@@ -261,9 +267,9 @@ export function mergeInOrder(parts: TranscribedPart[]): {
   turns: TranscriptTurn[]
   windowTitle: string
 } {
-  const turns = mergeTranscriptList(parts.map((p) => p.turns))
   const windowTitle = parts.map((p) => p.windowTitle).find(Boolean) ?? ""
-  return { turns, windowTitle }
+  const merged = mergeTranscriptList(parts.map((p) => p.turns))
+  return { turns: dropTitleTurns(merged, windowTitle), windowTitle }
 }
 
 /** Input checks shared by the streaming and the one-shot screenshot paths. */
@@ -285,6 +291,7 @@ async function fieldsFromScreenshots(
   failures: TranscriptFailure[],
   total: number,
   opts: ScreenshotExtractOptions,
+  schema: FeishuTableSchema,
 ): Promise<ExtractResult> {
   if (failures.length === total) {
     // Every screenshot failed: keep the old single-error experience (auth/timeout hints + 改用粘贴).
@@ -295,15 +302,28 @@ async function fieldsFromScreenshots(
   const { turns, windowTitle } = mergeInOrder(parts)
   const failureNotes = failures.map((f) => failedScreenshotNote(f.index))
   const chat = formatScreenshotChat(turns)
-  const forModel = windowTitle ? `${chat}\n\n[聊天窗口标题] ${windowTitle}` : chat
+  const titleHint = windowTitle
+    ? `[聊天窗口标题] ${windowTitle}\n（标题形如「客户名(人数) 我方公司技术支持」时：人数前的是客户，紧邻「技术支持」的是我方公司；客户字段优先按标题匹配已有选项，不要把我方公司当客户。）`
+    : ""
+  const forModel = [chat, titleHint].filter(Boolean).join("\n\n")
   const result = await extractRecord(forModel, opts)
+  // Deterministic safety net: the title still decides when the model left the customer blank
+  // or picked our own company out of the same title (T18).
+  const customerCol = (schema.columns ?? []).find(
+    (c) => c.key === "customer" && c.type === "select" && c.extract,
+  )
+  const customer = customerFromWindowTitle(result.draft.customer ?? "", windowTitle, customerCol)
   return {
     ...result,
     warning: [result.warning, ...failureNotes].filter(Boolean).join("；") || undefined,
     draft: {
       ...result.draft,
       chat,
-      uncertain: mergeUncertain(result.draft.uncertain ?? [], failureNotes),
+      ...(customer.value ? { customer: customer.value } : {}),
+      uncertain: mergeUncertain(
+        mergeUncertain(result.draft.uncertain ?? [], failureNotes),
+        customer.uncertain,
+      ),
     },
     transcript: turns,
     source: "screenshot",
@@ -363,7 +383,7 @@ export async function extractFromScreenshotsStream(
     }),
   )
 
-  return fieldsFromScreenshots(slots as TranscribedPart[], failures, compressed.length, opts)
+  return fieldsFromScreenshots(slots as TranscribedPart[], failures, compressed.length, opts, schemaState.schema)
 }
 
 export async function extractFromScreenshots(
