@@ -23,7 +23,7 @@ type ClipPayload = {
 
 function viewSuccessMessage(view: ClipPayload["view"], count: number): string {
   const head = view?.name
-    ? `已复制${count > 1 ? ` ${count} 行` : ""}（按「${view.name}」视图的列序）。到飞书这个视图里，选中一行的第一个单元格粘贴`
+    ? `已复制${count > 1 ? ` ${count} 行` : ""}（按「${view.name}」的列序）。请到飞书「${view.name}」视图里，选中一行的第一个单元格粘贴——粘到别的视图会错位`
     : `已复制${count > 1 ? ` ${count} 行` : ""}到剪贴板。到飞书「工作台粘贴」视图，选中一行的第一个单元格粘贴`
   return count > 1 ? `${head}，粘贴后点「标记为已同步」` : head
 }
