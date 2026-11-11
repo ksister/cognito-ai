@@ -1,67 +1,35 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { AlertTriangle, Loader2, RefreshCw } from "lucide-react"
+import { useState } from "react"
+import { AlertTriangle, Loader2 } from "lucide-react"
 import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
 import { selectClass } from "@/components/bits"
-import { fetchPasteViewApi, type PasteViewApiState } from "@/lib/paste-view-client"
 
-type ViewSummary = { name: string; columnCount: number | null }
+export type PickerView = { name: string; columnCount: number | null }
 
-async function fetchViews(): Promise<{ ok: boolean; views: ViewSummary[]; error?: string }> {
-  try {
-    const res = await fetch("/api/feishu/views")
-    const data = (await res.json()) as { ok?: boolean; views?: ViewSummary[]; error?: string }
-    if (!res.ok || !data.ok) return { ok: false, views: [], error: data.error ?? `读取视图列表失败（HTTP ${res.status}）` }
-    return { ok: true, views: data.views ?? [] }
-  } catch (e) {
-    return { ok: false, views: [], error: (e as Error).message }
-  }
+export type PickerState = {
+  readable: boolean
+  viewName: string
+  columns: string[]
+  placeholders: string[]
+  hidden: string[]
+  error?: string
 }
 
-export function PasteViewPicker({ initialViewName }: { initialViewName: string | null }) {
-  const [views, setViews] = useState<ViewSummary[]>([])
+type Props = {
+  views: PickerView[]
+  viewError: string | null
+  initialViewName: string | null
+  initialState: PickerState | null
+}
+
+export function PasteViewPicker({ views, viewError, initialViewName, initialState }: Props) {
   const [selected, setSelected] = useState(initialViewName ?? "")
-  const [state, setState] = useState<PasteViewApiState | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [state, setState] = useState<PickerState | null>(initialState)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    void (async () => {
-      const [listed, current] = await Promise.all([fetchViews(), fetchPasteViewApi()])
-      if (!alive) return
-      if (listed.ok) setViews(listed.views)
-      else setError(listed.error ?? null)
-      if (current) {
-        setState(current)
-        if (current.viewName) setSelected(current.viewName)
-      }
-      setLoading(false)
-    })()
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  async function refresh() {
-    setLoading(true)
-    setError(null)
-    const listed = await fetchViews()
-    if (listed.ok) setViews(listed.views)
-    else setError(listed.error ?? null)
-    const current = await fetchPasteViewApi()
-    if (current) {
-      setState(current)
-      if (current.viewName) setSelected(current.viewName)
-    }
-    setLoading(false)
-  }
 
   async function choose(viewName: string) {
-    if (!viewName) return
+    if (!viewName || viewName === selected) return
     setBusy(true)
     try {
       const res = await fetch("/api/feishu/paste-view", {
@@ -69,13 +37,28 @@ export function PasteViewPicker({ initialViewName }: { initialViewName: string |
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ viewName }),
       })
-      const data = (await res.json()) as PasteViewApiState & { error?: string }
-      if (!res.ok) {
+      const data = (await res.json()) as {
+        ok?: boolean
+        error?: string
+        readable?: boolean
+        viewName?: string | null
+        columns?: string[]
+        placeholders?: string[]
+        hidden?: string[]
+      }
+      if (!res.ok || !data.ok) {
         toast.error(data.error ?? `保存失败（HTTP ${res.status}）`)
         return
       }
       setSelected(viewName)
-      setState(data)
+      setState({
+        readable: Boolean(data.readable),
+        viewName: data.viewName ?? viewName,
+        columns: data.columns ?? [],
+        placeholders: data.placeholders ?? [],
+        hidden: data.hidden ?? [],
+        error: data.readable ? undefined : "视图读不到",
+      })
       toast.success(`已设为「${viewName}」`)
     } catch (e) {
       toast.error((e as Error).message)
@@ -86,48 +69,42 @@ export function PasteViewPicker({ initialViewName }: { initialViewName: string |
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-muted-foreground">粘贴用的视图</span>
-          <select
-            aria-label="粘贴用的视图"
-            className={`${selectClass} w-64`}
-            value={selected}
-            disabled={busy || loading}
-            onChange={(e) => void choose(e.target.value)}
-          >
-            <option value="">{loading ? "正在读取视图…" : "未选择（按配置列序复制）"}</option>
-            {views.map((v) => (
-              <option key={v.name} value={v.name}>
-                {v.name}
-                {v.columnCount ? `（${v.columnCount} 列）` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Button variant="outline" size="sm" disabled={busy || loading} onClick={() => void refresh()}>
-          <RefreshCw />
-          刷新列表
-        </Button>
-        {busy && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
-      </div>
+      <label className="flex flex-col gap-1 text-sm">
+        <span className="text-muted-foreground">粘贴用的视图</span>
+        <select
+          aria-label="粘贴用的视图"
+          className={`${selectClass} w-64`}
+          value={selected}
+          disabled={busy}
+          onChange={(e) => void choose(e.target.value)}
+        >
+          <option value="">未选择（按配置列序复制）</option>
+          {views.map((v) => (
+            <option key={v.name} value={v.name}>
+              {v.name}
+              {v.columnCount ? `（${v.columnCount} 列）` : ""}
+            </option>
+          ))}
+          {selected && !views.some((v) => v.name === selected) && <option value={selected}>{selected}</option>}
+        </select>
+      </label>
 
-      {error && <p className="text-sm text-amber-800">{error}</p>}
+      {viewError && <p className="text-sm text-amber-800">读取视图列表失败：{viewError}</p>}
 
-      {state && !state.configured && (
+      {!selected && (
         <p className="text-sm text-muted-foreground">
           还没有选择视图。「复制为飞书行」会按 <code className="text-xs">feishu-table.json</code> 的列顺序生成，适合固定
           20 列的专用粘贴视图。选一个你平时用的视图后，会按它的可见列顺序生成。
         </p>
       )}
 
-      {state?.configured && !state.readable && (
+      {selected && state && !state.readable && (
         <p className="text-sm text-rose-700">
           读不到视图「{state.viewName}」：{state.error}。现在复制会退回按配置列序生成，并在界面上提示。
         </p>
       )}
 
-      {state?.readable && (
+      {selected && state?.readable && (
         <div className="space-y-3">
           <div>
             <p className="mb-1.5 text-sm font-medium">
@@ -170,6 +147,8 @@ export function PasteViewPicker({ initialViewName }: { initialViewName: string |
           </p>
         </div>
       )}
+
+      {busy && <Loader2 className="size-4 animate-spin text-muted-foreground" />}
     </div>
   )
 }
