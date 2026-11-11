@@ -246,7 +246,7 @@ function parseCliJson(text: string): Record<string, unknown> | null {
   return null
 }
 
-async function runLarkCli(cliPath: string, args: string[]): Promise<CliRunResult> {
+export async function runLarkCli(cliPath: string, args: string[]): Promise<CliRunResult> {
   return new Promise((resolve) => {
     const child = spawn(cliPath, args, {
       shell: false,
