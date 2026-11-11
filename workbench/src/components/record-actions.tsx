@@ -13,7 +13,20 @@ import type { FeishuSchemaState } from "@/lib/feishu-schema"
 import { feishuFailureMessage, feishuOutcomeMessage } from "@/lib/lark-push-plan"
 import { STATUSES, type FeishuPushResult, type Status, type SupportRecord } from "@/lib/types"
 
-type ClipPayload = { text: string; warnings?: string[]; already?: string[]; error?: string }
+type ClipPayload = {
+  text: string
+  warnings?: string[]
+  already?: string[]
+  error?: string
+  view?: { configured: boolean; name?: string; fallback?: string }
+}
+
+function viewSuccessMessage(view: ClipPayload["view"], count: number): string {
+  const head = view?.name
+    ? `已复制${count > 1 ? ` ${count} 行` : ""}（按「${view.name}」的列序）。请到飞书「${view.name}」视图里，选中一行的第一个单元格粘贴——粘到别的视图会错位`
+    : `已复制${count > 1 ? ` ${count} 行` : ""}到剪贴板。到飞书「工作台粘贴」视图，选中一行的第一个单元格粘贴`
+  return count > 1 ? `${head}，粘贴后点「标记为已同步」` : head
+}
 
 async function fetchClipboard(ids: string[]): Promise<ClipPayload> {
   let res: Response
@@ -171,7 +184,7 @@ export function CopyFeishuButton({ record, schemaState }: { record: SupportRecor
               }).then((marked) => {
                 if (!marked.ok) toast.message("已复制，但标记已同步失败，可稍后在首页再标")
               })
-              toast.success("已复制到剪贴板。到飞书「工作台粘贴」视图，选中一行的第一个单元格粘贴")
+              toast.success(viewSuccessMessage(payload.view, 1))
               router.refresh()
             },
             (kind, message, value) => {
@@ -245,7 +258,7 @@ export function SyncPanel({ records, schemaState }: { records: SupportRecord[]; 
                 for (const w of payload.warnings ?? []) toast.message(w)
                 for (const id of payload.already ?? []) toast.message(`本地记录ID ${id} 已粘贴过，请在飞书搜索该 ID，不要新建一行`)
                 setCopied(true)
-                toast.success(`已复制 ${records.length} 行到剪贴板。粘贴后点「标记为已同步」`)
+                toast.success(viewSuccessMessage(payload.view, records.length))
               },
               (kind, message, value) => {
                 setCopied(false)
