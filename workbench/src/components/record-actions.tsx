@@ -11,6 +11,7 @@ import { CopyFallback } from "@/components/copy-fallback"
 import { copyFetchedText } from "@/lib/copy-text"
 import type { FeishuSchemaState } from "@/lib/feishu-schema"
 import { feishuFailureMessage, feishuOutcomeMessage } from "@/lib/lark-push-plan"
+import { copySuccessNotice } from "@/lib/paste-view"
 import { STATUSES, type FeishuPushResult, type Status, type SupportRecord } from "@/lib/types"
 
 type ClipPayload = {
@@ -18,13 +19,17 @@ type ClipPayload = {
   warnings?: string[]
   already?: string[]
   error?: string
-  view?: { configured: boolean; name?: string; fallback?: string }
+  view?: {
+    configured: boolean
+    source: "live" | "cache" | "config" | null
+    name?: string
+    readAt?: string
+    fallback?: string
+  }
 }
 
 function viewSuccessMessage(view: ClipPayload["view"], count: number): string {
-  const head = view?.name
-    ? `已复制${count > 1 ? ` ${count} 行` : ""}（按「${view.name}」的列序）。请到飞书「${view.name}」视图里，选中一行的第一个单元格粘贴——粘到别的视图会错位`
-    : `已复制${count > 1 ? ` ${count} 行` : ""}到剪贴板。到飞书「工作台粘贴」视图，选中一行的第一个单元格粘贴`
+  const head = copySuccessNotice(view?.source ?? null, view?.name ?? null, count)
   return count > 1 ? `${head}，粘贴后点「标记为已同步」` : head
 }
 

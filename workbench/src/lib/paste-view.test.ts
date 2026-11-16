@@ -4,10 +4,15 @@ import { describe, expect, it } from "vitest"
 import { parseFeishuTableSchema, schemaPasteCells, type FeishuTableSchema } from "./feishu-schema"
 import { toTsvRows } from "./feishu"
 import {
+  cacheFallbackNotice,
   columnsDroppedByView,
+  configFallbackNotice,
+  copySuccessNotice,
   hiddenSchemaColumns,
+  parsePasteViewConfigText,
   pasteCellsForView,
   placeholderViewColumns,
+  resolvePasteColumns,
   viewColumnNames,
   viewPasteWarnings,
 } from "./paste-view"
@@ -124,6 +129,91 @@ describe("paste-view：占位与隐藏列提示", () => {
 
   it("hiddenSchemaColumns 与记录无关，只看配置和视图", () => {
     expect(hiddenSchemaColumns(["标题"], schemaWithPlaceholders)).toEqual(["备注"])
+  })
+})
+
+describe("paste-view：复制时的三级兜底（评审补充）", () => {
+  const cached = { columns: ["客户公司1", "问题名称"], readAt: "2026-11-12" }
+
+  it("现场读得到：用现场列序", () => {
+    const r = resolvePasteColumns({ viewName: "客户问题支持记录表", live: ["问题名称", "客户公司1"], cached })
+    expect(r.source).toBe("live")
+    if (r.source === "config") throw new Error("should be live")
+    expect(r.columns).toEqual(["问题名称", "客户公司1"])
+  })
+
+  it("现场读不到但有缓存：用缓存列序并带读取日期", () => {
+    const r = resolvePasteColumns({ viewName: "客户问题支持记录表", live: null, cached })
+    expect(r.source).toBe("cache")
+    if (r.source !== "cache") throw new Error("should be cache")
+    expect(r.columns).toEqual(["客户公司1", "问题名称"])
+    expect(r.readAt).toBe("2026-11-12")
+  })
+
+  it("现场读不到且没有缓存：退回配置列序", () => {
+    const r = resolvePasteColumns({ viewName: "客户问题支持记录表", live: null, cached: null })
+    expect(r.source).toBe("config")
+    expect(r).not.toHaveProperty("columns")
+  })
+
+  it("读取返回空数组也算读不到，继续走缓存", () => {
+    const r = resolvePasteColumns({ viewName: "v", live: [], cached })
+    expect(r.source).toBe("cache")
+  })
+
+  it("缓存提示写明日期、视图名，并要求核对", () => {
+    const text = cacheFallbackNotice("客户问题支持记录表", "2026-11-12")
+    expect(text).toContain("飞书暂时读不到")
+    expect(text).toContain("11-12")
+    expect(text).toContain("客户问题支持记录表")
+    expect(text).toContain("核对")
+  })
+
+  it("配置列序兜底时只能粘到「工作台粘贴」，不能提示粘到视图", () => {
+    const text = copySuccessNotice("config", "客户问题支持记录表")
+    expect(text).toContain("工作台粘贴")
+    expect(text).toContain("配置列序")
+    expect(text).not.toContain("视图里")
+  })
+
+  it("缓存兜底时仍提示粘到同一个视图，并说明是按该视图列序", () => {
+    const text = copySuccessNotice("cache", "客户问题支持记录表")
+    expect(text).toContain("客户问题支持记录表")
+    expect(text).not.toContain("工作台粘贴")
+  })
+
+  it("配置兜底提示说明原因", () => {
+    expect(configFallbackNotice("X")).toContain("配置列序")
+    expect(configFallbackNotice("X")).toContain("工作台粘贴")
+  })
+})
+
+describe("paste-view：配置文件解析（损坏要显示，不能静默当未设置）", () => {
+  it("文件不存在算没设置", () => {
+    const r = parsePasteViewConfigText(null)
+    expect(r.ok && r.setting === null).toBe(true)
+  })
+
+  it("JSON 坏了要报损坏", () => {
+    const r = parsePasteViewConfigText("{not json")
+    expect(r.ok).toBe(false)
+    expect(r.ok === false && r.error).toContain("配置文件损坏")
+  })
+
+  it("缺少 viewId/viewName 也算损坏", () => {
+    expect(parsePasteViewConfigText(JSON.stringify({ viewName: "X" })).ok).toBe(false)
+    expect(parsePasteViewConfigText(JSON.stringify({ viewId: "v", viewName: "" })).ok).toBe(false)
+  })
+
+  it("正常配置连同缓存列序一起读出", () => {
+    const r = parsePasteViewConfigText(
+      JSON.stringify({ viewId: "v1", viewName: "客户问题支持记录表", columns: ["A", "B"], columnsReadAt: "2026-11-12" }),
+    )
+    expect(r.ok).toBe(true)
+    if (!r.ok || !r.setting) throw new Error("should parse")
+    expect(r.setting.viewName).toBe("客户问题支持记录表")
+    expect(r.setting.columns).toEqual(["A", "B"])
+    expect(r.setting.columnsReadAt).toBe("2026-11-12")
   })
 })
 

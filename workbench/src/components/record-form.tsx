@@ -560,7 +560,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
           if (!schemaState.ok) {
             toast.error(`没有复制到剪贴板：表结构配置不可用。${schemaState.error}`)
           } else {
-            const { view: pasteView, warning } = await fetchPasteView()
+            const { view: pasteView, notice, warning } = await fetchPasteView()
             const clip = feishuClipboard([data as SupportRecord], schemaState.schema, pasteView)
             if (!clip.text) {
               toast.error("没有复制到剪贴板：生成的行是空的")
@@ -569,7 +569,7 @@ export function RecordForm({ customers, aiLabel, vlLabel, initial, defaultCustom
                 await copyText(clip.text)
                 for (const w of clip.warnings) toast.message(w)
                 if (warning) toast.message(warning)
-                toast.message("已把本行复制到剪贴板，可粘贴到飞书表格")
+                toast.message(notice)
               } catch (e) {
                 const err = e instanceof CopyTextError ? e : new CopyTextError((e as Error).message, clip.text)
                 setCopyFallback(err.text || clip.text)

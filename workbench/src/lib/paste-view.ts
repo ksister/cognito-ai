@@ -30,6 +30,10 @@ export type PasteViewSetting = {
   viewId: string
   viewName: string
   updatedAt?: string
+  /** 上次成功读到的列名，现场读不到时兜底用。 */
+  columns?: string[]
+  /** 缓存列序的读取日期（YYYY-MM-DD，本地时区）。 */
+  columnsReadAt?: string
 }
 
 /** 一个视图列对应的落位：column 为空说明工作台不填这一列，value 是空占位。 */
@@ -131,7 +135,101 @@ export function viewPasteWarnings(
   return [`这个视图隐藏了 ${dropped.length} 列，这些内容不会带上：${dropped.join("、")}`]
 }
 
-/** 复制前置校验：视图读不到时退回配置列序，调用方负责提示。 */
-export type PasteViewResolution =
-  | { ok: true; columns: ViewColumn[]; name: string }
+/**
+ * 复制时列序的来源（T16）：
+ * - live：刚刚从飞书读到
+ * - cache：现场读不到，用上次成功读到的缓存（并提示核对）
+ * - config：完全没有缓存，退回 feishu-table.json 的列序（必须粘到「工作台粘贴」视图）
+ */
+export type PasteColumnsSource = "live" | "cache" | "config"
+
+export type PasteColumnsResolution =
+  | { source: "live"; name: string; columns: string[] }
+  | { source: "cache"; name: string; columns: string[]; readAt: string }
+  | { source: "config"; name: string }
+
+/** 现场读取失败 → 缓存 → 配置列序，三级兜底。纯函数，便于单测。 */
+export function resolvePasteColumns(input: {
+  viewName: string
+  live: ViewColumnsInput | null | undefined
+  cached?: { columns: ViewColumnsInput; readAt: string } | null
+}): PasteColumnsResolution {
+  const live = input.live ? viewColumnNames(input.live).filter(Boolean) : []
+  if (live.length) return { source: "live", name: input.viewName, columns: live }
+
+  const cached = input.cached ? viewColumnNames(input.cached.columns).filter(Boolean) : []
+  if (cached.length) {
+    return { source: "cache", name: input.viewName, columns: cached, readAt: input.cached?.readAt ?? "" }
+  }
+
+  return { source: "config", name: input.viewName }
+}
+
+/** 缓存兜底提示：必须让用户知道「这是旧列序，改过视图要核对」。 */
+export function cacheFallbackNotice(viewName: string, readAt: string): string {
+  const day = readAt.length >= 10 ? readAt.slice(5, 10) : readAt
+  return `飞书暂时读不到，已按 ${day} 读取的「${viewName}」列序复制；如果这之后改过视图，请核对`
+}
+
+/** 配置列序兜底提示：只能粘到固定列序的「工作台粘贴」视图。 */
+export function configFallbackNotice(viewName: string): string {
+  return `读不到视图「${viewName}」，已按配置列序复制，请粘到「工作台粘贴」视图`
+}
+
+/** 复制成功后的提示。列序来源不同，要粘的目标视图也不同。 */
+export function copySuccessNotice(
+  source: PasteColumnsSource | null,
+  viewName: string | null,
+  count = 1,
+): string {
+  const rows = count > 1 ? ` ${count} 行` : ""
+  if (source === "config" || !viewName) {
+    return `已复制${rows}（按配置列序）。请粘到飞书「工作台粘贴」视图，选中一行的第一个单元格粘贴`
+  }
+  return `已复制${rows}（按「${viewName}」的列序）。请到飞书「${viewName}」视图里，选中一行的第一个单元格粘贴——粘到别的视图会错位`
+}
+
+export type PasteViewConfigParse =
+  | { ok: true; setting: PasteViewSetting | null }
   | { ok: false; error: string }
+
+const CONFIG_BROKEN = "配置文件损坏，请重新选择视图"
+
+function configStringList(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const list = raw.map((x) => String(x ?? "").trim()).filter(Boolean)
+  return list.length ? list : undefined
+}
+
+/**
+ * 解析 paste-view.json。文件不存在（null）算「没设置」；文件存在但解析不了算损坏，
+ * 设置页必须让用户重选，不能静默当成没设置（评审要求）。
+ */
+export function parsePasteViewConfigText(text: string | null): PasteViewConfigParse {
+  if (text === null) return { ok: true, setting: null }
+
+  let raw: unknown
+  try {
+    raw = JSON.parse(text) as unknown
+  } catch {
+    return { ok: false, error: CONFIG_BROKEN }
+  }
+  if (!raw || typeof raw !== "object") return { ok: false, error: CONFIG_BROKEN }
+
+  const obj = raw as Record<string, unknown>
+  const viewId = typeof obj.viewId === "string" ? obj.viewId.trim() : ""
+  const viewName = typeof obj.viewName === "string" ? obj.viewName.trim() : ""
+  if (!viewId || !viewName) return { ok: false, error: CONFIG_BROKEN }
+
+  return {
+    ok: true,
+    setting: {
+      viewId,
+      viewName,
+      updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : undefined,
+      columns: configStringList(obj.columns),
+      columnsReadAt: typeof obj.columnsReadAt === "string" ? obj.columnsReadAt : undefined,
+    },
+  }
+}
+

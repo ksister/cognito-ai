@@ -1,46 +1,24 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { PageHeader } from "@/components/bits"
 import { PasteViewPicker, type PickerState } from "@/components/paste-view-picker"
-import { loadFeishuSchemaState } from "@/lib/feishu-schema-load"
-import { listFeishuViews, readFeishuViewColumns } from "@/lib/lark-view"
-import { hiddenSchemaColumns, placeholderViewColumns, viewColumnNames } from "@/lib/paste-view"
-import { loadPasteViewSetting } from "@/lib/paste-view-config"
+import { listFeishuViews } from "@/lib/lark-view"
+import { buildPasteViewState } from "@/lib/paste-view-state"
 
 export const dynamic = "force-dynamic"
 
 export default async function SettingsPage() {
-  const setting = await loadPasteViewSetting()
-  const listed = await listFeishuViews()
+  const [listed, state] = await Promise.all([listFeishuViews(), buildPasteViewState()])
   const views = listed.ok ? listed.views.map((v) => ({ name: v.name, columnCount: v.columnCount })) : []
-
-  let state: PickerState | null = null
-  if (setting) {
-    const [read, schemaState] = await Promise.all([
-      readFeishuViewColumns(setting.viewId || setting.viewName),
-      loadFeishuSchemaState(),
-    ])
-    if (read.ok && schemaState.ok) {
-      const columns = viewColumnNames(read.columns)
-      state = {
-        readable: true,
-        viewName: setting.viewName,
-        columns,
-        placeholders: placeholderViewColumns(columns, schemaState.schema),
-        hidden: hiddenSchemaColumns(columns, schemaState.schema),
-      }
-    } else {
-      let error = ""
-      if (!read.ok) error = read.error
-      else if (!schemaState.ok) error = schemaState.error
-      state = {
-        readable: false,
-        viewName: setting.viewName,
-        columns: [],
-        placeholders: [],
-        hidden: [],
-        error,
-      }
-    }
+  const initial: PickerState = {
+    configured: state.configured,
+    broken: state.broken,
+    source: state.source,
+    viewName: state.viewName,
+    columns: state.columns,
+    placeholders: state.placeholders,
+    hidden: state.hidden,
+    readAt: state.readAt,
+    error: state.error,
   }
 
   return (
@@ -57,15 +35,15 @@ export default async function SettingsPage() {
             <CardTitle>粘贴用的视图</CardTitle>
             <CardDescription>
               「复制为飞书行」按这个视图的可见列顺序生成一行：工作台不填的列（公式、创建人、附件、人员等）输出空占位；
-              视图隐藏、但工作台会填的列会在复制时提示。
+              视图隐藏、但工作台会填的列会在复制时提示。每次读到列序都会存一份缓存，飞书暂时读不到时按缓存复制。
             </CardDescription>
           </CardHeader>
           <CardContent>
             <PasteViewPicker
               views={views}
               viewError={listed.ok ? null : listed.error}
-              initialViewName={setting?.viewName ?? null}
-              initialState={state}
+              initialViewName={state.viewName}
+              initialState={initial}
             />
           </CardContent>
         </Card>

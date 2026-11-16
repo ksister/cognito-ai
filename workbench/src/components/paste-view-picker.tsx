@@ -8,11 +8,14 @@ import { selectClass } from "@/components/bits"
 export type PickerView = { name: string; columnCount: number | null }
 
 export type PickerState = {
-  readable: boolean
-  viewName: string
+  configured: boolean
+  broken: boolean
+  source: "live" | "cache" | "config" | null
+  viewName: string | null
   columns: string[]
   placeholders: string[]
   hidden: string[]
+  readAt?: string
   error?: string
 }
 
@@ -20,12 +23,12 @@ type Props = {
   views: PickerView[]
   viewError: string | null
   initialViewName: string | null
-  initialState: PickerState | null
+  initialState: PickerState
 }
 
 export function PasteViewPicker({ views, viewError, initialViewName, initialState }: Props) {
   const [selected, setSelected] = useState(initialViewName ?? "")
-  const [state, setState] = useState<PickerState | null>(initialState)
+  const [state, setState] = useState<PickerState>(initialState)
   const [busy, setBusy] = useState(false)
 
   async function choose(viewName: string) {
@@ -37,27 +40,22 @@ export function PasteViewPicker({ views, viewError, initialViewName, initialStat
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ viewName }),
       })
-      const data = (await res.json()) as {
-        ok?: boolean
-        error?: string
-        readable?: boolean
-        viewName?: string | null
-        columns?: string[]
-        placeholders?: string[]
-        hidden?: string[]
-      }
+      const data = (await res.json()) as PickerState & { ok?: boolean; error?: string }
       if (!res.ok || !data.ok) {
         toast.error(data.error ?? `保存失败（HTTP ${res.status}）`)
         return
       }
       setSelected(viewName)
       setState({
-        readable: Boolean(data.readable),
-        viewName: data.viewName ?? viewName,
+        configured: data.configured,
+        broken: data.broken,
+        source: data.source,
+        viewName: data.viewName,
         columns: data.columns ?? [],
         placeholders: data.placeholders ?? [],
         hidden: data.hidden ?? [],
-        error: data.readable ? undefined : "视图读不到",
+        readAt: data.readAt,
+        error: data.error,
       })
       toast.success(`已设为「${viewName}」`)
     } catch (e) {
@@ -91,20 +89,32 @@ export function PasteViewPicker({ views, viewError, initialViewName, initialStat
 
       {viewError && <p className="text-sm text-amber-800">读取视图列表失败：{viewError}</p>}
 
-      {!selected && (
+      {state.broken && (
+        <p className="text-sm text-rose-700">
+          配置文件损坏，请重新选择视图：{state.error}。选一个视图会覆盖这个文件里的设置。
+        </p>
+      )}
+
+      {!state.broken && !state.configured && (
         <p className="text-sm text-muted-foreground">
           还没有选择视图。「复制为飞书行」会按 <code className="text-xs">feishu-table.json</code> 的列顺序生成，适合固定
           20 列的专用粘贴视图。选一个你平时用的视图后，会按它的可见列顺序生成。
         </p>
       )}
 
-      {selected && state && !state.readable && (
+      {state.configured && state.source === "config" && (
         <p className="text-sm text-rose-700">
-          读不到视图「{state.viewName}」：{state.error}。现在复制会退回按配置列序生成，并在界面上提示。
+          读不到视图「{state.viewName}」：{state.error}。现在复制会退回按配置列序生成（只能粘到「工作台粘贴」视图），并在界面上提示。
         </p>
       )}
 
-      {selected && state?.readable && (
+      {state.configured && state.source === "cache" && (
+        <p className="text-sm text-amber-800">
+          飞书暂时读不到这个视图，下面用的是 {state.readAt || "上次"} 读到的缓存列序。改过视图的话请核对。
+        </p>
+      )}
+
+      {state.columns.length > 0 && (
         <div className="space-y-3">
           <div>
             <p className="mb-1.5 text-sm font-medium">
