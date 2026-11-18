@@ -525,7 +525,7 @@ export function isRecordTextKey(key: string): key is RecordTextKey {
   return (RECORD_TEXT_KEYS as readonly string[]).includes(key)
 }
 
-type FieldSource = Partial<RecordDraft> & { extras?: Record<string, string> }
+export type FieldSource = Partial<RecordDraft> & { extras?: Record<string, string> }
 
 export function isMultiFieldKey(key: string): key is MultiFieldKey {
   return (MULTI_FIELD_KEYS as readonly string[]).includes(key)
