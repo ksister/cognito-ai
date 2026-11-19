@@ -22,7 +22,7 @@ import {
   screenshotsToUpload,
 } from "./lark-push-plan"
 import { larkAuthExpiryMessage } from "./lark-auth-error"
-import { checkTargetRow, type RowSnapshot } from "./row-guard"
+import { cellText, checkTargetRow, type RowSnapshot } from "./row-guard"
 import type { RecordDraft } from "./types"
 
 /** Field IDs for 技术支持表格 — locked by DoD */
@@ -454,18 +454,6 @@ async function fetchFieldMetaViaCli(cliPath: string, cfg: LarkCfg): Promise<Fiel
     throw Object.assign(new Error(e.message), { code: e.code })
   }
   return extractFieldItems(run.json)
-}
-
-function cellText(value: unknown): string {
-  if (value == null) return ""
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean") return String(value)
-  if (Array.isArray(value)) return value.map(cellText).join("、")
-  if (typeof value === "object") {
-    const obj = value as Record<string, unknown>
-    return String(obj.name ?? obj.text ?? obj.value ?? "")
-  }
-  return ""
 }
 
 /** T31：核对目标行用到的列名，全部来自私有配置，不写死中文列名。 */

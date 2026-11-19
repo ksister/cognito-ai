@@ -1,30 +1,32 @@
 import { describe, expect, it } from "vitest"
-import { stripFeishuRecordId } from "./record-patch"
+import { SERVER_MANAGED_KEYS, stripServerManagedFields } from "./record-patch"
 
-describe("record-patch：客户端不能写 feishu_record_id（T31）", () => {
-  it("丢掉客户端传入的 feishuRecordId", () => {
-    const patch = stripFeishuRecordId({ status: "已解决", feishuRecordId: "rec_client_supplied" })
-    expect(patch).not.toHaveProperty("feishuRecordId")
-    expect(patch.status).toBe("已解决")
-  })
-
-  it("其它字段原样保留", () => {
-    const patch = stripFeishuRecordId({
+describe("record-patch：客户端不能写飞书同步字段（T31）", () => {
+  it("四个服务端字段全部被丢掉", () => {
+    const patch = stripServerManagedFields({
       title: "t",
-      status: "AE处理中",
+      feishuRecordId: "rec_client_supplied",
       feishuSynced: true,
-      feishuRecordId: "rec_x",
+      feishuSyncedAt: "2026-11-19T00:00:00.000Z",
+      feishuAttached: ["a.jpg"],
     })
+    for (const key of SERVER_MANAGED_KEYS) expect(patch).not.toHaveProperty(key)
     expect(patch.title).toBe("t")
-    expect(patch.status).toBe("AE处理中")
-    // 只按评审要求处理 feishu_record_id；其它同步字段不在本次范围
-    expect(patch.feishuSynced).toBe(true)
   })
 
-  it("没有该字段时不影响原对象", () => {
-    const input = { title: "t" }
-    const patch = stripFeishuRecordId(input)
-    expect(patch).toEqual({ title: "t" })
-    expect(input).toEqual({ title: "t" })
+  it("普通记录字段原样保留", () => {
+    const patch = stripServerManagedFields({ title: "t", status: "AE处理中", local_id: "AE-20261110-01" })
+    expect(patch).toEqual({ title: "t", status: "AE处理中", local_id: "AE-20261110-01" })
+  })
+
+  it("不修改传入对象", () => {
+    const input = { title: "t", feishuRecordId: "rec_x" }
+    const patch = stripServerManagedFields(input)
+    expect(input.feishuRecordId).toBe("rec_x")
+    expect(patch).not.toHaveProperty("feishuRecordId")
+  })
+
+  it("没有这些字段时是恒等变换", () => {
+    expect(stripServerManagedFields({ status: "已解决" })).toEqual({ status: "已解决" })
   })
 })

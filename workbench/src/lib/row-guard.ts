@@ -19,15 +19,65 @@ export type RowSnapshot = {
 
 export type RowGuardResult = { ok: true } | { ok: false; reason: string }
 
-const clean = (v: string | undefined | null) => (v ?? "").replace(/\s+/g, " ").trim()
-const day = (v: string) => clean(v).slice(0, 10)
+const SHANGHAI = "Asia/Shanghai"
+const dayFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: SHANGHAI,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+})
 
-/** 只比较日期部分：飞书日期列可能带时间。 */
+/**
+ * 把飞书日期值换算成 Asia/Shanghai 的 YYYY-MM-DD。
+ * 兼容三种真实格式：13 位毫秒数、ISO 8601（带时区的按上海换算）、纯日期。
+ */
+export function shanghaiDate(value: string | number | null | undefined): string {
+  if (value == null) return ""
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? dayFormatter.format(new Date(value)) : ""
+  }
+  const text = String(value).trim()
+  if (!text) return ""
+  if (/^\d{13}$/.test(text)) return dayFormatter.format(new Date(Number(text)))
+  if (/^\d{10}$/.test(text)) return dayFormatter.format(new Date(Number(text) * 1000))
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text
+  const parsed = new Date(text)
+  if (Number.isNaN(parsed.getTime())) return ""
+  return dayFormatter.format(parsed)
+}
+
+/** 只比较日期部分：飞书日期列可能带时间或时间戳。 */
 export function sameDay(a: string, b: string): boolean {
-  const left = day(a)
-  const right = day(b)
+  const left = shanghaiDate(a)
+  const right = shanghaiDate(b)
   return Boolean(left) && left === right
 }
+
+/**
+ * 单元格取值。
+ * - 文本段数组（`[{text, type}]`）是同一个富文本单元格，**直接拼接、不加分隔符**；
+ * - 人员、多选这类列表才用「、」连接；
+ * - 对象取 name / text / value。
+ */
+export function cellText(value: unknown): string {
+  if (value == null) return ""
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (Array.isArray(value)) {
+    const allTextSegments =
+      value.length > 0 &&
+      value.every((item) => item !== null && typeof item === "object" && typeof (item as { text?: unknown }).text === "string")
+    if (allTextSegments) return value.map((item) => String((item as { text: string }).text)).join("")
+    return value.map(cellText).join("、")
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>
+    return String(obj.name ?? obj.text ?? obj.value ?? "")
+  }
+  return ""
+}
+
+const clean = (v: string | undefined | null) => (v ?? "").replace(/\s+/g, " ").trim()
 
 export function checkTargetRow(expected: RowSnapshot, actual: RowSnapshot): RowGuardResult {
   const wantId = clean(expected.localId)
