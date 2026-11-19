@@ -22,6 +22,7 @@ import {
   screenshotsToUpload,
 } from "./lark-push-plan"
 import { larkAuthExpiryMessage } from "./lark-auth-error"
+import { cellText, checkTargetRow, type RowSnapshot } from "./row-guard"
 import type { RecordDraft } from "./types"
 
 /** Field IDs for 技术支持表格 — locked by DoD */
@@ -58,6 +59,7 @@ export type LarkPushStep =
   | "local"
   | "create"
   | "update"
+  | "verify"
   | "upload"
   | "attach"
   | "config"
@@ -452,6 +454,54 @@ async function fetchFieldMetaViaCli(cliPath: string, cfg: LarkCfg): Promise<Fiel
     throw Object.assign(new Error(e.message), { code: e.code })
   }
   return extractFieldItems(run.json)
+}
+
+/** T31：核对目标行用到的列名，全部来自私有配置，不写死中文列名。 */
+function rowGuardColumns(schema: FeishuTableSchema): { localId?: string; title?: string; date?: string } {
+  const name = (key: string) => schema.columns.find((c) => c.key === key)?.name
+  return { localId: name("local_id"), title: name("title"), date: name("date") }
+}
+
+/**
+ * T31：更新前只读取目标行，拿到核对需要的三个值。
+ * 不做任何写入；读不到就返回 error，由调用方中止更新。
+ */
+async function fetchRowSnapshotViaCli(
+  cliPath: string,
+  cfg: LarkCfg,
+  recordId: string,
+  schema: FeishuTableSchema,
+): Promise<RowSnapshot | { error: string }> {
+  const cols = rowGuardColumns(schema)
+  if (!cols.localId || !cols.title || !cols.date) {
+    return { error: "私有配置缺少「本地记录ID / 问题名称 / 创建时间」中的列，无法核对目标行" }
+  }
+  const run = await runLarkCli(cliPath, [
+    "base",
+    "+record-get",
+    "--base-token",
+    cfg.baseToken,
+    "--table-id",
+    cfg.tableId,
+    "--as",
+    "user",
+    "--format",
+    "json",
+    "--record-id",
+    recordId,
+  ])
+  if (!isCliSuccess(run)) return { error: cliErrorMessage(run).message }
+
+  const data = (run.json?.data ?? {}) as { fields?: unknown; data?: unknown }
+  const names = Array.isArray(data.fields) ? data.fields.map(String) : []
+  const rows = Array.isArray(data.data) ? (data.data as unknown[][]) : []
+  const row = rows[0]
+  if (!names.length || !row) return { error: "读不到目标行" }
+  const valueOf = (col?: string) => {
+    const index = col ? names.indexOf(col) : -1
+    return index >= 0 ? cellText(row[index]) : ""
+  }
+  return { localId: valueOf(cols.localId), title: valueOf(cols.title), date: valueOf(cols.date) }
 }
 
 /** Field names, ids, and select options from lark-cli. Ids stay in the private config. */
@@ -1119,6 +1169,27 @@ async function pushViaCli(input: LarkPushInput, cfg: LarkCfg, schema: FeishuTabl
 
   let recordId = existingId
   if (updating) {
+    const snapshot = await fetchRowSnapshotViaCli(cliPath, cfg, existingId, schema)
+    if ("error" in snapshot) {
+      const message = `没有更新：读不到要更新的飞书行（${snapshot.error}）。为免覆盖别人的行，本次不更新`
+      steps.push({ step: "verify", ok: false, message })
+      return { ok: false, action: "updated", recordId: existingId, steps, warnings, error: message, code: "row_read_failed", mode: "cli" }
+    }
+    const guard = checkTargetRow(
+      {
+        localId: input.draft.local_id ?? "",
+        title: input.draft.title ?? "",
+        date: input.draft.date ?? "",
+      },
+      snapshot,
+    )
+    if (!guard.ok) {
+      const message = `没有更新：${guard.reason}。请人工核对这一行（末 4 位 ${existingId.slice(-4)}）后再同步`
+      steps.push({ step: "verify", ok: false, message })
+      return { ok: false, action: "updated", recordId: existingId, steps, warnings, error: message, code: "row_mismatch", mode: "cli" }
+    }
+    steps.push({ step: "verify", ok: true, message: "已核对目标行" })
+
     const updated = await retryIfNotReady(() => upsertViaCli(cliPath, cfg, existingId, writeFields))
     if ("error" in updated) {
       steps.push({ step: "update", ok: false, message: `${updated.error} (${updated.code})` })
