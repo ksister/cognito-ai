@@ -1,5 +1,6 @@
 import { getRecord, updateRecord } from "@/lib/kb"
 import { queueSavedRecordPush } from "@/lib/feishu-record-push"
+import { stripFeishuRecordId } from "@/lib/record-patch"
 import type { RecordDraft } from "@/lib/types"
 
 type Ctx = { params: Promise<{ customer: string; file: string }> }
@@ -27,8 +28,10 @@ export async function PUT(req: Request, { params }: Ctx) {
   const patch: PutBody = { ...body }
   delete patch.syncFeishu
   delete patch.feishu
+  // T31：feishu_record_id 只由服务端推送流程写回，客户端传了也忽略
+  const safePatch = stripFeishuRecordId(patch) as PutBody
   try {
-    const saved = await updateRecord(decodeURIComponent(customer), decodeURIComponent(file), patch)
+    const saved = await updateRecord(decodeURIComponent(customer), decodeURIComponent(file), safePatch)
     if (!syncFeishu) return Response.json(saved)
     // Same per-record queue as the create path (T11 review 1): a save whose background
     // write is still running has no feishu_record_id yet, so this push must wait for it
