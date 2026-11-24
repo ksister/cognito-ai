@@ -1,13 +1,20 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { PageHeader } from "@/components/bits"
+import { NicknameEditor } from "@/components/nickname-editor"
 import { PasteViewPicker, type PickerState } from "@/components/paste-view-picker"
+import { resolveKbRoot } from "@/lib/feishu-schema-load"
 import { listFeishuViews } from "@/lib/lark-view"
 import { buildPasteViewState } from "@/lib/paste-view-state"
+import { loadReplaySettings } from "@/lib/replay-config"
 
 export const dynamic = "force-dynamic"
 
 export default async function SettingsPage() {
-  const [listed, state] = await Promise.all([listFeishuViews(), buildPasteViewState()])
+  const [listed, state, replay] = await Promise.all([
+    listFeishuViews(),
+    buildPasteViewState(),
+    loadReplaySettings(resolveKbRoot()),
+  ])
   const views = listed.ok ? listed.views.map((v) => ({ name: v.name, columnCount: v.columnCount })) : []
   const initial: PickerState = {
     configured: state.configured,
@@ -45,6 +52,26 @@ export default async function SettingsPage() {
               initialViewName={state.viewName}
               initialState={initial}
             />
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="mt-6 space-y-3">
+        <h2 className="text-sm font-semibold text-muted-foreground">回放测试</h2>
+        <Card>
+          <CardHeader>
+            <CardTitle>我的昵称</CardTitle>
+            <CardDescription>
+              聊天截图里你本人可能出现的昵称，可填多个（逗号或顿号分隔）。重新识别时用它判断哪边是你、哪边是客户，
+              也用它从转写里取「我当时的实际回复」。
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {replay.ok ? (
+              <NicknameEditor initial={replay.settings.myNicknames} />
+            ) : (
+              <p className="text-sm text-destructive">配置读不了：{replay.error}</p>
+            )}
           </CardContent>
         </Card>
       </section>

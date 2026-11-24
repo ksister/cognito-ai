@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Building2, LayoutDashboard, Lightbulb, ListChecks, PenLine, ScanEye, Settings } from "lucide-react"
+import { Building2, FlaskConical, LayoutDashboard, Lightbulb, ListChecks, PenLine, ScanEye, Settings } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const ITEMS = [
@@ -11,6 +11,7 @@ const ITEMS = [
   { href: "/records", label: "支持记录", icon: ListChecks },
   { href: "/customers", label: "客户", icon: Building2 },
   { href: "/requirements", label: "需求池", icon: Lightbulb },
+  { href: "/replay", label: "回放测试", icon: FlaskConical },
   { href: "/settings", label: "设置", icon: Settings },
 ]
 
