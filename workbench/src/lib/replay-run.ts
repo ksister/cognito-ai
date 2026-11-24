@@ -9,10 +9,15 @@ import {
   type FeishuTableSchema,
 } from "./feishu-schema"
 import { loadFeishuSchemaState } from "./feishu-schema-load"
-import { estimateCost, priceFor, readModelPrices } from "./model-prices"
-import { loadReplaySettings } from "./replay-config"
+import { estimateCost, priceFor, readModelPrices, type ModelPrice, type ModelPrices } from "./model-prices"
+import { averageUsage, type TokenAverage } from "./replay-model"
+import { loadCompanyPrefixes, loadSpeakersSettings } from "./speakers-config"
+import { resolveAndFormat } from "./speaker-resolve"
+import { buildTranscriptPromptV2, transcribeImageFile, TRANSCRIPT_PROMPT_VERSION_V2 } from "./vl-transcribe"
+import { runPool } from "./concurrency"
 import {
   estimateReorganizeCost,
+  estimateTokens,
   newRunId,
   type CostEstimate,
   type ReplayRun,
@@ -20,7 +25,14 @@ import {
 import { snapshotDir } from "./replay-store"
 import { writeRun } from "./replay-results-store"
 import type { ReplayRecordDetail } from "./replay-model"
-import { formatScreenshotChat, mergeTranscriptList, OCR_TRANSCRIPT_MARKER, type TranscriptTurn } from "./transcript"
+import {
+  dropTitleTurns,
+  formatScreenshotChat,
+  mergeTranscriptList,
+  mergeUncertain,
+  OCR_TRANSCRIPT_MARKER,
+  type TranscriptTurn,
+} from "./transcript"
 import type { RecordDraft } from "./types"
 
 /**
@@ -79,7 +91,8 @@ export async function readSnapshotTranscript(kbDir: string, detail: ReplayRecord
     if (!ok) missingTranscripts++
     parts.push(turns)
   }
-  const merged = mergeTranscriptList(parts)
+  const prefixes = await loadCompanyPrefixes(kbDir)
+  const merged = mergeTranscriptList(parts, prefixes)
   const text = formatScreenshotChat(merged)
   return {
     text,
@@ -198,7 +211,7 @@ export async function runReorganize({
   const chat = transcriptForModel(transcript.text)
   if (!chat) throw new Error("快照里没有可用的转写文字；这条记录可能没有聊天截图，或截图转写失败了")
 
-  const settings = await loadReplaySettings(kbDir)
+  const settings = await loadSpeakersSettings(kbDir)
   const me = settings.ok ? settings.settings.myNicknames[0] : undefined
 
   const t0 = Date.now()
@@ -236,4 +249,257 @@ export async function runReorganize({
   }
   await writeRun(kbDir, run)
   return run
+}
+
+// ——— 「从截图重新转写」（PR2） ————————————————————————————
+
+/**
+ * 预览：这次要重转几张图、大概多少钱。
+ * 图片 token 用快照里已有转写的平均用量估，字段部分用当前转写长度估，不调模型。
+ */
+export type RetranscribePreview = {
+  mode: "retranscribe"
+  vlModel: string
+  model: string
+  promptVersion: string
+  transcriptPromptVersion: string
+  /** 需要重新转写的聊天截图张数。 */
+  shots: number
+  /** 非聊天截图（报错/界面/效果图），不重转。 */
+  skipped: number
+  /** 快照里找不到图片文件的张数（会失败，先提示）。 */
+  missingMedia: number
+  myNicknameCount: number
+  companyPrefixCount: number
+  estimate: {
+    vlPromptTokens: number
+    vlCompletionTokens: number
+    fieldPromptTokens: number
+    fieldCompletionTokens: number
+    /** 两段加起来的金额；任一段缺单价时为 null，缺的那段写在 missingPrice。 */
+    costYuan: number | null
+    missingPrice: string[]
+    priceNote: string
+  }
+  previousRuns: number
+}
+
+async function averageSnapshotUsage(kbDir: string, detail: ReplayRecordDetail, limit = 40): Promise<TokenAverage[]> {
+  const out: TokenAverage[] = []
+  for (const shot of detail.shots.slice(0, limit)) {
+    try {
+      const json = JSON.parse(await fs.readFile(path.join(snapshotDir(kbDir), shot.transcript), "utf8")) as {
+        usage?: { promptTokens?: number; completionTokens?: number }
+        ms?: number
+      }
+      const promptTokens = Number(json?.usage?.promptTokens ?? 0)
+      const completionTokens = Number(json?.usage?.completionTokens ?? 0)
+      if (promptTokens || completionTokens) {
+        out.push({ promptTokens, completionTokens, ms: Number(json?.ms ?? 0) })
+      }
+    } catch {
+      /* 缺转写文件就跳过，平均用量按剩下的算 */
+    }
+  }
+  return out
+}
+
+function priceOf(prices: ModelPrices, model: string): ModelPrice {
+  return priceFor(prices, model)
+}
+
+/** 预览「从截图重新转写」：只读快照和配置。 */
+export async function previewRetranscribe({
+  kbDir,
+  detail,
+  previousRuns = 0,
+  vlModel,
+}: {
+  kbDir: string
+  detail: ReplayRecordDetail
+  previousRuns?: number
+  vlModel: string
+}): Promise<RetranscribePreview> {
+  const schema = await schemaOrThrow()
+  const settingsState = await loadSpeakersSettings(kbDir)
+  const settings = settingsState.ok ? settingsState.settings : { myNicknames: [], companyPrefixes: [] }
+  const chatShots = detail.shots.filter((s) => s.isChat !== false)
+  let missingMedia = 0
+  for (const shot of chatShots) {
+    try {
+      await fs.access(path.join(snapshotDir(kbDir), shot.file))
+    } catch {
+      missingMedia++
+    }
+  }
+
+  const prices = await readModelPrices(kbDir)
+  const vlPrice = priceOf(prices, vlModel)
+  const fieldPrice = priceOf(prices, aiModelName())
+  const avg = averageUsage(await averageSnapshotUsage(kbDir, detail))
+  const vlPromptTokens = Math.round(avg.promptTokens * chatShots.length)
+  const vlCompletionTokens = Math.round(avg.completionTokens * chatShots.length)
+
+  const existing = await readSnapshotTranscript(kbDir, detail)
+  const systemChars = buildExtractSystem(schema, "paste", "short").length + buildExtractSystem(schema, "paste", "long").length
+  const fieldPromptTokens =
+    estimateTokens(systemChars) + 2 * estimateTokens(Math.min(existing.text.length || 2000, MAX_TRANSCRIPT_CHARS))
+  const fieldCompletionTokens = 1200
+
+  const vlCost = estimateCost({ promptTokens: vlPromptTokens, completionTokens: vlCompletionTokens, price: vlPrice })
+  const fieldCost = estimateCost({ promptTokens: fieldPromptTokens, completionTokens: fieldCompletionTokens, price: fieldPrice })
+  const missingPrice: string[] = []
+  if (vlCost == null) missingPrice.push(`转写模型 ${vlModel || "（未配置 DASHSCOPE_VL_MODEL）"}`)
+  if (fieldCost == null) missingPrice.push(`字段模型 ${aiModelName()}`)
+
+  return {
+    mode: "retranscribe",
+    vlModel,
+    model: aiModelName(),
+    promptVersion: FIELDS_PROMPT_VERSION,
+    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V2,
+    shots: chatShots.length,
+    skipped: detail.shots.length - chatShots.length,
+    missingMedia,
+    myNicknameCount: settings.myNicknames.length,
+    companyPrefixCount: settings.companyPrefixes.length,
+    estimate: {
+      vlPromptTokens,
+      vlCompletionTokens,
+      fieldPromptTokens,
+      fieldCompletionTokens,
+      costYuan: vlCost == null || fieldCost == null ? null : vlCost + fieldCost,
+      missingPrice,
+      priceNote: `${prices.updatedAt || "未注明日期"} 的 KB_DIR/config/model-prices.json`,
+    },
+    previousRuns,
+  }
+}
+
+/**
+ * 执行「从截图重新转写」：
+ *  1. 用 v2 提示词把快照里的聊天截图重新转写（每张一次 VL 调用，按顺序拼接去重叠）；
+ *  2. 用「我的昵称」+ 气泡左右定发言人（`resolveSpeakerTurns`）；
+ *  3. 用同一套字段提示词出字段；
+ *  4. 结果写 replay/results/，记 transcriptPromptVersion=transcript-v2。
+ *
+ * 只读快照，不写 snapshot/transcripts/（那是快照自己的证据），也不写飞书。
+ */
+export async function runRetranscribe({
+  kbDir,
+  detail,
+  vlModel,
+  dashscopeKey,
+  dashscopeBase,
+  at = new Date(),
+  runId,
+  concurrency = 4,
+}: {
+  kbDir: string
+  detail: ReplayRecordDetail
+  vlModel: string
+  dashscopeKey: string
+  dashscopeBase: string
+  at?: Date
+  runId?: string
+  concurrency?: number
+}): Promise<ReplayRun> {
+  const schema = await schemaOrThrow()
+  if (!dashscopeKey || !vlModel) throw new Error("缺少 DASHSCOPE_API_KEY / DASHSCOPE_VL_MODEL，无法重新转写截图")
+  const settingsState = await loadSpeakersSettings(kbDir)
+  const settings = settingsState.ok ? settingsState.settings : { myNicknames: [], companyPrefixes: [] }
+  const prompt = buildTranscriptPromptV2({ myNicknames: settings.myNicknames })
+
+  const chatShots = detail.shots.filter((s) => s.isChat !== false)
+  if (!chatShots.length) throw new Error("这条记录没有聊天截图，无法从截图重新转写")
+
+  const t0 = Date.now()
+  const parts: (TranscriptTurn[] | null)[] = new Array(chatShots.length).fill(null)
+  const failures: number[] = []
+  let vlPromptTokens = 0
+  let vlCompletionTokens = 0
+  let windowTitle = ""
+
+  await runPool(
+    chatShots.map((shot, index) => ({ shot, index })),
+    Math.max(1, Math.min(concurrency, 6)),
+    async ({ shot, index }) => {
+      try {
+        const result = await transcribeImageFile(path.join(snapshotDir(kbDir), shot.file), { dashscopeKey, dashscopeBase, vlModel }, { prompt })
+        if (!result.ok) {
+          failures.push(index + 1)
+          return
+        }
+        vlPromptTokens += result.usage.promptTokens
+        vlCompletionTokens += result.usage.completionTokens
+        if (!windowTitle && result.windowTitle) windowTitle = result.windowTitle
+        parts[index] = result.turns
+      } catch {
+        failures.push(index + 1)
+      }
+    },
+  )
+
+  if (failures.length === parts.length) throw new Error(`全部截图重新转写失败（${failures.length} 张），检查通义配置后重试`)
+
+  // 按图片顺序拼（缺图的位置跳过），再去掉相邻截图的重叠。
+  const ordered = parts.filter((p): p is TranscriptTurn[] => Array.isArray(p))
+  const mergedTurns = dropTitleTurns(mergeTranscriptList(ordered, settings.companyPrefixes), windowTitle)
+  const { chat, uncertain: speakerUncertain, turns: resolvedTurns } = resolveAndFormat(mergedTurns, settings)
+  const chatForModel = transcriptForModel(chat)
+
+  const { result: fieldsResult, usage: fieldUsage } = await extractRecordWithUsage(chatForModel, {
+    me: settings.myNicknames[0],
+  })
+  const durationMs = Date.now() - t0
+
+  const prices = await readModelPrices(kbDir)
+  const vlCost = estimateCost({
+    promptTokens: vlPromptTokens,
+    completionTokens: vlCompletionTokens,
+    price: priceOf(prices, vlModel),
+  })
+  const fieldCost = fieldUsage
+    ? estimateCost({ promptTokens: fieldUsage.promptTokens, completionTokens: fieldUsage.completionTokens, price: priceOf(prices, aiModelName()) })
+    : null
+  const costYuan = vlCost == null && fieldCost == null ? null : (vlCost ?? 0) + (fieldCost ?? 0)
+
+  const warnings: string[] = []
+  if (fieldsResult.warning) warnings.push(fieldsResult.warning)
+  if (failures.length) warnings.push(`${failures.length} 张截图重新转写失败，已跳过`)
+  if (!settings.myNicknames.length) warnings.push("设置页还没填「我的昵称」，发言人只能按气泡位置判断")
+  if (!hasTitle(fieldsResult)) warnings.push("模型没有给出标题和问题描述，这次结果基本为空")
+
+  const run: ReplayRun = {
+    version: 1,
+    runId: runId ?? newRunId(at),
+    recordId: detail.recordId,
+    r: detail.r,
+    mode: "retranscribe",
+    at: at.toISOString(),
+    durationMs,
+    model: aiModelName(),
+    promptVersion: FIELDS_PROMPT_VERSION,
+    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V2,
+    extractMode: fieldsResult.mode,
+    usage: { promptTokens: vlPromptTokens + (fieldUsage?.promptTokens ?? 0), completionTokens: vlCompletionTokens + (fieldUsage?.completionTokens ?? 0) },
+    costYuan,
+    transcript: chat,
+    turns: resolvedTurns.map((t) => ({
+      speaker: t.speaker,
+      text: t.text,
+      kind: t.kind === "time" ? "time" : "speech",
+      ...(t.side ? { side: t.side } : {}),
+    })),
+    fields: draftToFields(fieldsResult.draft, schema),
+    uncertain: mergeUncertain(speakerUncertain, fieldsResult.draft.uncertain ?? []),
+    warning: warnings.length ? warnings.join("；") : undefined,
+    review: null,
+  }
+  await writeRun(kbDir, run)
+  return run
+}
+
+function hasTitle(result: { draft: Partial<RecordDraft> }): boolean {
+  return Boolean(result.draft.title || result.draft.problem)
 }

@@ -1,14 +1,29 @@
 import fsp from "node:fs/promises"
 import sharp from "sharp"
-import { VL_TRANSCRIPT_RULE, cleanWindowTitle, dropTitleTurns, parseTranscript } from "./transcript.ts"
+import {
+  VL_TRANSCRIPT_RULE,
+  VL_TRANSCRIPT_RULE_V2,
+  cleanWindowTitle,
+  dropTitleTurns,
+  parseTranscript,
+} from "./transcript.ts"
 import type { TranscriptTurn } from "./types"
 
 /**
  * 单张截图的通义 VL 转写（D19：一图一次调用，只做转写和「是不是聊天截图」）。
  * 从 T25 导出脚本里抽出来，T25 与 T26 回放快照共用这一份。
  *
+ * T27 起有两种提示词：
+ *  - v1（`buildSnapshotTranscriptPrompt`）：主流程、T25、T26 快照用，保持不变；
+ *  - v2（`buildTranscriptPromptV2`）：只在回放「从截图重新转写」里用，要求每条消息带
+ *    气泡左右和截图上显示的昵称原文，发言人由 `speaker-resolve.ts` 的确定性规则决定。
+ *
  * Script-safe: no `server-only`, `.ts` suffix on relative runtime imports.
  */
+
+/** 提示词版本写进每次回放结果，比较两批结果时要能看出来用的是哪一版。 */
+export const TRANSCRIPT_PROMPT_VERSION_V1 = "transcript-v1"
+export const TRANSCRIPT_PROMPT_VERSION_V2 = "transcript-v2"
 
 export const NON_CHAT_LABELS = ["报错", "界面", "效果图"] as const
 
@@ -40,6 +55,26 @@ export function buildSnapshotTranscriptPrompt(): string {
     "- 否：is_chat=false，category 填「报错」或「界面」或「效果图」之一，transcript 为空数组，不要硬转。",
     '只输出 JSON：{"is_chat":true,"category":"","window_title":"截图顶部的聊天窗口标题，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。',
     VL_TRANSCRIPT_RULE,
+    "只转写这一张截图，不要输出客户、问题描述等字段。",
+  ].join("")
+}
+
+/**
+ * v2 转写提示词（只在回放里用）：
+ * 多给一份「我的昵称」清单，让模型把右侧的人认成用户本人；昵称一律照抄截图原文。
+ */
+export function buildTranscriptPromptV2({ myNicknames = [] }: { myNicknames?: string[] } = {}): string {
+  const mine = myNicknames.map((n) => String(n).trim()).filter(Boolean)
+  const mineText = mine.length
+    ? `用户在聊天里的昵称可能是：${mine.join("、")}（截图里出现这些名字的消息，气泡通常在右侧）。`
+    : ""
+  return [
+    "这是微信或飞书的聊天截图。先判断整张图是不是聊天窗口（微信/飞书对话界面）：",
+    "- 是：is_chat=true，category 留空，按下面的规则逐字转写；",
+    "- 否：is_chat=false，category 填「报错」或「界面」或「效果图」之一，transcript 为空数组，不要硬转。",
+    '只输出 JSON：{"is_chat":true,"category":"","window_title":"截图顶部的聊天窗口标题，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。',
+    mineText,
+    VL_TRANSCRIPT_RULE_V2,
     "只转写这一张截图，不要输出客户、问题描述等字段。",
   ].join("")
 }
@@ -83,7 +118,10 @@ function vlError(status: number, body: string): string {
   return `通义接口返回 ${status}：${String(body).slice(0, 160)}`
 }
 
-async function postVl({ key, base, model, image }: { key: string; base: string; model: string; image: Buffer }, timeoutMs = 300_000) {
+async function postVl(
+  { key, base, model, image, prompt }: { key: string; base: string; model: string; image: Buffer; prompt: string },
+  timeoutMs = 300_000,
+) {
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
@@ -98,7 +136,7 @@ async function postVl({ key, base, model, image }: { key: string; base: string; 
           role: "user",
           content: [
             { type: "image_url", image_url: { url: `data:${mimeOf(image)};base64,${image.toString("base64")}` } },
-            { type: "text", text: buildSnapshotTranscriptPrompt() },
+            { type: "text", text: prompt },
           ],
         },
       ],
@@ -138,8 +176,12 @@ async function postVl({ key, base, model, image }: { key: string; base: string; 
   }
 }
 
-/** 单张图：分类 + 转写（失败返回 ok:false，调用方记录）。 */
-export async function transcribeImageFile(file: string, cfg: VlConfig, { retries = 2 }: { retries?: number } = {}): Promise<TranscribeResult> {
+/** 单张图：分类 + 转写（失败返回 ok:false，调用方记录）。prompt 默认 v1。 */
+export async function transcribeImageFile(
+  file: string,
+  cfg: VlConfig,
+  { retries = 2, prompt = buildSnapshotTranscriptPrompt() }: { retries?: number; prompt?: string } = {},
+): Promise<TranscribeResult> {
   const image = await compressForVl(await fsp.readFile(file))
   let lastErr: unknown = null
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -151,6 +193,7 @@ export async function transcribeImageFile(file: string, cfg: VlConfig, { retries
         base: cfg.dashscopeBase,
         model: cfg.vlModel,
         image,
+        prompt,
       })
       const isChat = obj?.is_chat === true || obj?.isChat === true
       const windowTitle = cleanWindowTitle(typeof obj?.window_title === "string" ? obj.window_title : "")

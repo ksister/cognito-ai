@@ -1,6 +1,8 @@
 import { extractRecord } from "@/lib/ai"
 import { FeishuSchemaError } from "@/lib/feishu-schema"
+import { resolveKbRoot } from "@/lib/feishu-schema-load"
 import { readProfileContext } from "@/lib/kb"
+import { loadCompanyPrefixes } from "@/lib/speakers-config"
 import { extractFromScreenshots, MAX_SCREENSHOTS, VlExtractError } from "@/lib/vl"
 import type { ExtractErrorCode } from "@/lib/types"
 
@@ -37,7 +39,8 @@ export async function POST(req: Request) {
     }
     if (!images.length) return err("parse_error", "请上传截图，或改用粘贴文字")
     try {
-      return Response.json(await extractFromScreenshots(images, { customer, me, profile }))
+      const prefixes = await loadCompanyPrefixes(resolveKbRoot())
+      return Response.json(await extractFromScreenshots(images, { customer, me, profile, prefixes }))
     } catch (e) {
       if (e instanceof VlExtractError) {
         const status = e.code === "auth" ? 401 : e.code === "rate_limit" ? 429 : e.code === "timeout" ? 504 : 400

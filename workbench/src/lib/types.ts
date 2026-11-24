@@ -122,6 +122,8 @@ export type TranscriptTurn = {
   text: string
   /** `time` is a standalone separator such as `—— 10月28日 09:12 ——`, with no speaker. */
   kind?: "speech" | "time"
+  /** 气泡在左还是右（T27 发言人判断用；老转写没有这个字段）。 */
+  side?: "left" | "right"
 }
 
 export type ExtractResult = {

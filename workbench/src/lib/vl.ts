@@ -114,7 +114,7 @@ function nullToEmpty(v: unknown): string {
 }
 
 /** Transcript merge used by tests and as the chat half of a VL draft. */
-export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string } = {}): {
+export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string; prefixes?: string[] } = {}): {
   chat: string
   uncertain: string[]
   title: string
@@ -124,6 +124,7 @@ export function normalizeVlDraft(d: Record<string, unknown>, ctx: { me?: string 
   const transcribed = applyTranscript(d.transcript, uncertain, {
     me: ctx.me,
     contact: nullToEmpty(d.contact),
+    prefixes: ctx.prefixes,
   })
   return {
     title: nullToEmpty(d.title),
@@ -260,15 +261,24 @@ export type ScreenshotProgress = {
   windowTitle: string
 }
 
-export type ScreenshotExtractOptions = { customer?: string; me?: string; profile?: string }
+export type ScreenshotExtractOptions = {
+  customer?: string
+  me?: string
+  profile?: string
+  /** 我方公司名前缀（私有配置 speakers.json），只用于匹配发言人。 */
+  prefixes?: string[]
+}
 
 /** Merge finished screenshots in image order; the first window title wins. */
-export function mergeInOrder(parts: TranscribedPart[]): {
+export function mergeInOrder(parts: TranscribedPart[], prefixes: string[] = []): {
   turns: TranscriptTurn[]
   windowTitle: string
 } {
   const windowTitle = parts.map((p) => p.windowTitle).find(Boolean) ?? ""
-  const merged = mergeTranscriptList(parts.map((p) => p.turns))
+  const merged = mergeTranscriptList(
+    parts.map((p) => p.turns),
+    prefixes,
+  )
   return { turns: dropTitleTurns(merged, windowTitle), windowTitle }
 }
 
@@ -299,7 +309,7 @@ async function fieldsFromScreenshots(
     if (reason instanceof VlExtractError) throw reason
     throw new VlExtractError("parse_error", `截图转写失败：${(reason as Error)?.message || "未知错误"}。可改用粘贴文字。`)
   }
-  const { turns, windowTitle } = mergeInOrder(parts)
+  const { turns, windowTitle } = mergeInOrder(parts, opts.prefixes)
   const failureNotes = failures.map((f) => failedScreenshotNote(f.index))
   const chat = formatScreenshotChat(turns)
   const titleHint = windowTitle
@@ -361,7 +371,7 @@ export async function extractFromScreenshotsStream(
     const signature = `${parts.length}/${done}`
     if (signature === lastEmitted) return
     lastEmitted = signature
-    const { turns, windowTitle } = mergeInOrder(parts)
+    const { turns, windowTitle } = mergeInOrder(parts, opts.prefixes)
     onProgress({
       done,
       total: compressed.length,

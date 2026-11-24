@@ -31,22 +31,52 @@ type RecordInfo = {
   fieldsComplete: boolean
 }
 
+type ReorganizePreviewData = {
+  mode: "reorganize"
+  model: string
+  promptVersion: string
+  aiConfigured: boolean
+  shots: number
+  missingTranscripts: number
+  transcriptChars: number
+  transcriptLines: number
+  truncated: boolean
+  previousRuns: number
+  estimate: { promptTokens: number; completionTokens: number; costYuan: number | null; priceNote: string }
+}
+
+type RetranscribePreviewData = {
+  mode: "retranscribe"
+  vlModel: string
+  model: string
+  promptVersion: string
+  transcriptPromptVersion: string
+  shots: number
+  skipped: number
+  missingMedia: number
+  myNicknameCount: number
+  companyPrefixCount: number
+  previousRuns: number
+  estimate: {
+    vlPromptTokens: number
+    vlCompletionTokens: number
+    fieldPromptTokens: number
+    fieldCompletionTokens: number
+    costYuan: number | null
+    missingPrice: string[]
+    priceNote: string
+  }
+}
+
+type PreviewData = ReorganizePreviewData | RetranscribePreviewData
+
 type Preview = {
   ok?: boolean
   error?: string
-  preview?: {
-    model: string
-    promptVersion: string
-    aiConfigured: boolean
-    shots: number
-    missingTranscripts: number
-    transcriptChars: number
-    transcriptLines: number
-    truncated: boolean
-    previousRuns: number
-    estimate: { promptTokens: number; completionTokens: number; costYuan: number | null; priceNote: string }
-  }
+  preview?: PreviewData
 }
+
+type RunMode = "reorganize" | "retranscribe"
 
 type Edits = Record<string, ReplayFieldReview>
 
@@ -105,8 +135,8 @@ export function ReplayCompare({
   const [saving, setSaving] = useState(false)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [preview, setPreview] = useState<Preview["preview"] | null>(null)
-  const [loadingPreview, setLoadingPreview] = useState(false)
+  const [preview, setPreview] = useState<PreviewData | null>(null)
+  const [loadingPreview, setLoadingPreview] = useState<RunMode | null>(null)
   const [showSame, setShowSame] = useState(false)
 
   // 刷新页面后如果多了新结果（刚跑完），自动切到最新那次。
@@ -184,11 +214,11 @@ export function ReplayCompare({
     void save(false)
   }
 
-  async function openPreview() {
-    setLoadingPreview(true)
+  async function openPreview(mode: RunMode) {
+    setLoadingPreview(mode)
     setError(null)
     try {
-      const res = await fetch(`/api/replay/run?r=${encodeURIComponent(record.r)}`)
+      const res = await fetch(`/api/replay/run?r=${encodeURIComponent(record.r)}&mode=${mode}`)
       const data = (await res.json()) as Preview
       if (!res.ok || !data.ok || !data.preview) {
         setError(data.error ?? `预览失败（HTTP ${res.status}）`)
@@ -198,18 +228,18 @@ export function ReplayCompare({
     } catch (e) {
       setError((e as Error).message)
     } finally {
-      setLoadingPreview(false)
+      setLoadingPreview(null)
     }
   }
 
-  async function runNow() {
+  async function runNow(mode: RunMode) {
     setRunning(true)
     setError(null)
     try {
       const res = await fetch("/api/replay/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ r: record.r, mode: "reorganize", confirm: true }),
+        body: JSON.stringify({ r: record.r, mode, confirm: true }),
       })
       const data = (await res.json()) as {
         ok?: boolean
@@ -287,19 +317,25 @@ export function ReplayCompare({
 
             <button
               type="button"
-              onClick={() => void openPreview()}
-              disabled={loadingPreview || running}
+              onClick={() => void openPreview("reorganize")}
+              disabled={loadingPreview !== null || running}
               className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
-              {loadingPreview ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+              {loadingPreview === "reorganize" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
               只重跑整理
             </button>
             <button
               type="button"
-              disabled
-              title="第二个 PR 才做（从快照截图重新调 VL 转写）"
-              className="h-8 cursor-not-allowed rounded-lg border bg-background px-2.5 text-sm font-medium opacity-50"
+              onClick={() => void openPreview("retranscribe")}
+              disabled={loadingPreview !== null || running || record.screenshotCount === 0}
+              title={record.screenshotCount === 0 ? "这条记录没有截图" : "用快照里的截图重新调 VL 转写（提示词 v2），再出字段"}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg border bg-background px-2.5 text-sm font-medium hover:bg-muted disabled:opacity-60"
             >
+              {loadingPreview === "retranscribe" ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <ImageIcon className="size-3.5" />
+              )}
               从截图重新转写
             </button>
             <button
@@ -336,29 +372,62 @@ export function ReplayCompare({
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             <ul className="space-y-1 text-muted-foreground">
-              <li>
-                {record.r} · 转写 {preview.transcriptChars} 字 / {preview.transcriptLines} 行，截图 {preview.shots} 张
-                {preview.missingTranscripts ? `（${preview.missingTranscripts} 张没有可用转写）` : ""}
-              </li>
-              <li>
-                模型 {preview.model} · 提示词 {preview.promptVersion} · 这条记录已有 {preview.previousRuns} 次结果
-              </li>
-              <li>
-                预计 {preview.estimate.promptTokens} 输入 / {preview.estimate.completionTokens} 输出 tokens
-              </li>
-              <li>
-                预计费用：
-                {preview.estimate.costYuan == null
-                  ? `无法估算（${preview.estimate.priceNote}）`
-                  : `约 ${preview.estimate.costYuan.toFixed(3)} 元（${preview.estimate.priceNote}）`}
-              </li>
-              {preview.truncated && <li className="text-amber-700">转写超过 3 万字，只送前 3 万字给模型。</li>}
-              {!preview.aiConfigured && <li className="text-amber-700">没配 AI key，会退回规则提取（结果会很粗）。</li>}
+              {preview.mode === "reorganize" ? (
+                <>
+                  <li>
+                    {record.r} · 用快照已有转写：{preview.transcriptChars} 字 / {preview.transcriptLines} 行，截图 {preview.shots} 张
+                    {preview.missingTranscripts ? `（${preview.missingTranscripts} 张没有可用转写）` : ""}
+                  </li>
+                  <li>
+                    模型 {preview.model} · 提示词 {preview.promptVersion} · 这条记录已有 {preview.previousRuns} 次结果
+                  </li>
+                  <li>
+                    预计 {preview.estimate.promptTokens} 输入 / {preview.estimate.completionTokens} 输出 tokens
+                  </li>
+                  <li>
+                    预计费用：
+                    {preview.estimate.costYuan == null
+                      ? `无法估算（${preview.estimate.priceNote}）`
+                      : `约 ${preview.estimate.costYuan.toFixed(3)} 元（${preview.estimate.priceNote}）`}
+                  </li>
+                  {preview.truncated && <li className="text-amber-700">转写超过 3 万字，只送前 3 万字给模型。</li>}
+                  {!preview.aiConfigured && <li className="text-amber-700">没配 AI key，会退回规则提取（结果会很粗）。</li>}
+                </>
+              ) : (
+                <>
+                  <li>
+                    {record.r} · 重新转写 {preview.shots} 张聊天截图（另有 {preview.skipped} 张非聊天截图不重转）
+                    {preview.missingMedia ? `（${preview.missingMedia} 张在快照里找不到图片文件）` : ""}
+                  </li>
+                  <li>
+                    转写模型 {preview.vlModel || "（未配置）"} · 提示词 {preview.transcriptPromptVersion}；字段模型 {preview.model} · 提示词{" "}
+                    {preview.promptVersion}
+                  </li>
+                  <li>
+                    发言人配置：我的昵称 {preview.myNicknameCount} 个 · 公司前缀 {preview.companyPrefixCount} 个
+                    {preview.myNicknameCount === 0 ? "（还没填，只能按气泡左右判断）" : ""}
+                  </li>
+                  <li>
+                    预计 tokens：转写 {preview.estimate.vlPromptTokens} 输入 / {preview.estimate.vlCompletionTokens} 输出，字段{" "}
+                    {preview.estimate.fieldPromptTokens} 输入 / {preview.estimate.fieldCompletionTokens} 输出
+                  </li>
+                  <li>
+                    预计费用：
+                    {preview.estimate.costYuan == null
+                      ? `无法估算（缺单价：${preview.estimate.missingPrice.join("、")}）`
+                      : `约 ${preview.estimate.costYuan.toFixed(3)} 元（${preview.estimate.priceNote}）`}
+                  </li>
+                  <li>这条记录已有 {preview.previousRuns} 次结果。</li>
+                  {preview.missingMedia > 0 && (
+                    <li className="text-amber-700">有截图在快照里找不到图片文件，那几张会失败；先刷新快照再跑。</li>
+                  )}
+                </>
+              )}
             </ul>
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => void runNow()}
+                onClick={() => void runNow(preview.mode)}
                 disabled={running}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/80 disabled:opacity-60"
               >

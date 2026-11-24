@@ -1,4 +1,6 @@
 import { readProfileContext } from "@/lib/kb"
+import { resolveKbRoot } from "@/lib/feishu-schema-load"
+import { loadCompanyPrefixes } from "@/lib/speakers-config"
 import { extractFromScreenshotsStream, MAX_SCREENSHOTS, VlExtractError, type ScreenshotProgress } from "@/lib/vl"
 import type { ExtractErrorCode, ExtractResult } from "@/lib/types"
 
@@ -50,7 +52,8 @@ export async function POST(req: Request) {
         }
       }
       try {
-        const result = await extractFromScreenshotsStream(images, { customer, me, profile }, (p) => {
+        const prefixes = await loadCompanyPrefixes(resolveKbRoot())
+        const result = await extractFromScreenshotsStream(images, { customer, me, profile, prefixes }, (p) => {
           send({ type: "progress", ...p })
         })
         send({ type: "draft", result })

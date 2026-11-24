@@ -8,8 +8,27 @@ export type { TranscriptTurn }
 const SPEAKER_KEYS = ["speaker", "发言人", "name", "who", "role"] as const
 const TEXT_KEYS = ["text", "内容", "content", "message", "line"] as const
 
-export const VL_TRANSCRIPT_RULE =
-  "transcript 是截图中的逐字转写，按上传顺序合并为同一段对话，并且必须是 JSON 的最后一个字段。不要摘要、不要改写、不要补全看不清的字。每一句一条。text 保留数字、型号、报错原文。识别不出的字不要写出来、不要猜，绝对不要输出 □、� 或其它乱码；整行都看不清就不输出这一行。所有表情和贴纸一律写成「[表情]」，不要输出 emoji 字符。不要自己添加「[OCR 转写，以截图为准]」这一行。截图不显示昵称时按气泡位置判断：右侧 speaker 用调用方给出的本人昵称，没有则写「我」，side 填 right；左侧 speaker 用 contact，没有则写「客户」，side 填 left。时间分隔不要带 speaker，kind 填 time，text 写成单独一行「—— 10月28日 09:12 ——」。图片的 text 写「[图片]」，文件写「[文件] 文件名」，语音写「[语音]」，speaker 仍是发出该条的人。"
+/** 转写要求里跟发言人无关的部分（v1 / v2 共用）。 */
+const TRANSCRIPT_STYLE_RULE =
+  "transcript 是截图中的逐字转写，按上传顺序合并为同一段对话，并且必须是 JSON 的最后一个字段。不要摘要、不要改写、不要补全看不清的字。每一句一条。text 保留数字、型号、报错原文。识别不出的字不要写出来、不要猜，绝对不要输出 □、� 或其它乱码；整行都看不清就不输出这一行。所有表情和贴纸一律写成「[表情]」，不要输出 emoji 字符。不要自己添加「[OCR 转写，以截图为准]」这一行。"
+
+/** v1 的发言人规则（主流程和已有快照都用它，**不要改这段**，改了就是换提示词版本）。 */
+const TRANSCRIPT_SPEAKER_RULE_V1 =
+  "截图不显示昵称时按气泡位置判断：右侧 speaker 用调用方给出的本人昵称，没有则写「我」，side 填 right；左侧 speaker 用 contact，没有则写「客户」，side 填 left。"
+
+/** v2 的发言人规则：只记录气泡位置和截图上显示的昵称，由代码决定谁是「我」。 */
+const TRANSCRIPT_SPEAKER_RULE_V2 =
+  "每条消息都要给出 side：气泡在右侧填 right（用户本人），在左侧填 left（对方）。speaker 填截图上显示的昵称原文（包含公司前缀就照抄），看不清就留空，绝对不要自己写「我」「客户」，也不要改写或补全昵称。"
+
+/** 时间分隔、图片、文件、语音的写法（v1 / v2 共用）。 */
+const TRANSCRIPT_FORMAT_RULE =
+  "时间分隔不要带 speaker，kind 填 time，text 写成单独一行「—— 10月28日 09:12 ——」。图片的 text 写「[图片]」，文件写「[文件] 文件名」，语音写「[语音]」，speaker 仍是发出该条的人。"
+
+/** 主流程（截图提取）用的转写规则 = v1。 */
+export const VL_TRANSCRIPT_RULE = `${TRANSCRIPT_STYLE_RULE}${TRANSCRIPT_SPEAKER_RULE_V1}${TRANSCRIPT_FORMAT_RULE}`
+
+/** 回放「从截图重新转写」用的 v2 规则（第一批 20 条比对后由技术总监决定是否切换）。 */
+export const VL_TRANSCRIPT_RULE_V2 = `${TRANSCRIPT_STYLE_RULE}${TRANSCRIPT_SPEAKER_RULE_V2}${TRANSCRIPT_FORMAT_RULE}`
 
 export const VL_TRANSCRIPT_SCHEMA =
   '"transcript": [{"speaker": "昵称；无昵称时右侧写我、左侧写客户", "side": "left|right|空", "kind": "speech|time", "text": "原文，或 —— 10月28日 09:12 ——，或 [图片] / [文件] 文件名 / [语音]"}]'
@@ -17,6 +36,8 @@ export const VL_TRANSCRIPT_SCHEMA =
 export type SpeakerContext = {
   me?: string
   contact?: string
+  /** 我方公司名前缀（私有配置 speakers.json）；只用于匹配，不改转写原文。 */
+  prefixes?: string[]
 }
 
 const EMOJI_PIECE = String.raw`(?:\p{Emoji_Presentation}(?:\uFE0F|\p{Emoji_Modifier})?|\p{Extended_Pictographic}\uFE0F)`
@@ -137,16 +158,22 @@ function turnFromObject(item: object, ctx: SpeakerContext): TranscriptTurn | nul
   }
   const text = firstString(o, TEXT_KEYS)
   const kindRaw = firstString(o, ["kind", "type", "类型"]).toLowerCase()
-  const side = firstString(o, ["side", "位置", "bubble"])
+  const sideRaw = firstString(o, ["side", "位置", "bubble"]).trim().toLowerCase()
+  const side: "left" | "right" | undefined =
+    sideRaw === "right" || sideRaw === "右" || sideRaw === "me" || sideRaw === "self"
+      ? "right"
+      : sideRaw === "left" || sideRaw === "左" || sideRaw === "customer"
+        ? "left"
+        : undefined
   if (kindRaw === "time" || kindRaw === "separator" || kindRaw === "时间" || isTimeSeparatorLine(text)) {
     if (!text.trim()) return null
     return { speaker: "", text: formatTimeSeparator(text), kind: "time" }
   }
   let speaker = firstString(o, SPEAKER_KEYS)
-  if (!speaker.trim()) speaker = inferSpeakerFromSide(side, ctx) ?? ""
+  if (!speaker.trim()) speaker = inferSpeakerFromSide(sideRaw, ctx) ?? ""
   if (!speaker && !text) return null
   if (text.trim() === OCR_TRANSCRIPT_MARKER && !speaker.trim()) return null
-  return { speaker, text, kind: "speech" }
+  return { speaker, text, kind: "speech", ...(side ? { side } : {}) }
 }
 
 /** Accept the VL `transcript` value: turn array, one turn object, or `发言人：内容` lines. */
@@ -245,48 +272,49 @@ export function applyTranscript(
   ctx: SpeakerContext = {},
 ): Pick<RecordDraft, "chat" | "uncertain"> {
   const turns = parseTranscript(rawTranscript, ctx)
+  const merged = mergeTranscriptList([turns], ctx.prefixes)
   return {
-    chat: formatScreenshotChat(turns),
-    uncertain: mergeUncertain(uncertain, transcriptUncertainty(turns)),
+    chat: formatScreenshotChat(merged),
+    uncertain: mergeUncertain(uncertain, transcriptUncertainty(merged)),
   }
 }
-
-/** Company/org prefixes that WeChat prepends to the display name, e.g. 「天云_张三」. */
-const SPEAKER_COMPANY_PREFIXES = ["天云"]
 
 /**
  * Strip emoji and company prefixes from a speaker name for MATCHING ONLY.
  * The raw transcript keeps the original name (it is evidence); never use this to rewrite it.
+ * Company prefixes come from the private settings (speakers.json), not from code.
  */
-export function normalizeSpeakerName(name: string): string {
+export function normalizeSpeakerName(name: string, prefixes: string[] = []): string {
   let s = name.normalize("NFKC")
   s = s.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, "")
   s = s.replace(/\s+/g, " ").trim()
-  for (const prefix of SPEAKER_COMPANY_PREFIXES) {
-    if (s.startsWith(`${prefix}_`) || s.startsWith(`${prefix} `)) {
-      const rest = s.slice(prefix.length).replace(/^[_\s]+/, "").trim()
+  for (const prefix of prefixes) {
+    const p = String(prefix ?? "").trim()
+    if (!p) continue
+    if (s.startsWith(`${p}_`) || s.startsWith(`${p} `) || s.startsWith(`${p}-`) || s.startsWith(`${p}|`)) {
+      const rest = s.slice(p.length).replace(/^[_\s\-|]+/, "").trim()
       if (rest) s = rest
     }
   }
   return s
 }
 
-function turnKey(t: TranscriptTurn): string {
-  return `${normalizeSpeakerName(t.speaker)}|${normalizeTranscriptText(t.text).replace(/\s+/g, " ").trim()}`
+function turnKey(t: TranscriptTurn, prefixes: string[] = []): string {
+  return `${normalizeSpeakerName(t.speaker, prefixes)}|${normalizeTranscriptText(t.text).replace(/\s+/g, " ").trim()}`
 }
 
 /**
  * Concatenate per-image transcripts, dropping the messages that appear at the bottom of
  * one screenshot and again at the top of the next. Pure: same inputs -> same output.
  */
-export function mergeTranscripts(prev: TranscriptTurn[], next: TranscriptTurn[]): TranscriptTurn[] {
+export function mergeTranscripts(prev: TranscriptTurn[], next: TranscriptTurn[], prefixes: string[] = []): TranscriptTurn[] {
   if (!prev.length) return [...next]
   if (!next.length) return [...prev]
   const max = Math.min(prev.length, next.length)
   let overlap = 0
   for (let k = max; k > 0; k--) {
-    const a = prev.slice(prev.length - k).map(turnKey)
-    const b = next.slice(0, k).map(turnKey)
+    const a = prev.slice(prev.length - k).map((t) => turnKey(t, prefixes))
+    const b = next.slice(0, k).map((t) => turnKey(t, prefixes))
     if (a.every((v, i) => v === b[i])) {
       overlap = k
       break
@@ -296,8 +324,8 @@ export function mergeTranscripts(prev: TranscriptTurn[], next: TranscriptTurn[])
 }
 
 /** Merge a list of per-image transcripts in image order. */
-export function mergeTranscriptList(parts: TranscriptTurn[][]): TranscriptTurn[] {
-  return parts.reduce<TranscriptTurn[]>((acc, part) => mergeTranscripts(acc, part), [])
+export function mergeTranscriptList(parts: TranscriptTurn[][], prefixes: string[] = []): TranscriptTurn[] {
+  return parts.reduce<TranscriptTurn[]>((acc, part) => mergeTranscripts(acc, part, prefixes), [])
 }
 
 /**
