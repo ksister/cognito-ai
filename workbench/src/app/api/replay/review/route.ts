@@ -1,5 +1,5 @@
 import { resolveKbRoot } from "@/lib/feishu-schema-load"
-import { isReplayIssueType, isValidRunId } from "@/lib/replay-result"
+import { isReplayIssueType, isSafeRecordId, isValidRunId } from "@/lib/replay-result"
 import { saveRunReview } from "@/lib/replay-results-store"
 
 export const dynamic = "force-dynamic"
@@ -33,7 +33,11 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Body
   const recordId = typeof body.recordId === "string" ? body.recordId : ""
   const runId = typeof body.runId === "string" ? body.runId : ""
-  if (!recordId || !isValidRunId(runId)) {
+  // 拼路径之前在接口这一层先挡一次：飞书记录 ID 只允许字母数字和 _-，运行 ID 是固定格式。
+  if (!isSafeRecordId(recordId)) {
+    return Response.json({ ok: false, error: "记录 ID 格式不对（只允许字母、数字和 _-）" }, { status: 400 })
+  }
+  if (!isValidRunId(runId)) {
     return Response.json({ ok: false, error: "缺少记录 ID 或运行 ID" }, { status: 400 })
   }
   try {

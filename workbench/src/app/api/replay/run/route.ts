@@ -1,5 +1,6 @@
 import { resolveKbRoot } from "@/lib/feishu-schema-load"
 import { isValidReplayR } from "@/lib/replay-model"
+import { isSafeRecordId } from "@/lib/replay-result"
 import { listRuns } from "@/lib/replay-results-store"
 import { previewReorganize, runReorganize, type ReorganizePreview } from "@/lib/replay-run"
 import { readRecordDetail } from "@/lib/replay-store"
@@ -12,6 +13,8 @@ async function loadDetail(r: unknown) {
   const kbDir = resolveKbRoot()
   const detail = await readRecordDetail(kbDir, r as string)
   if (!detail) return { error: "快照里没有这条记录，先刷新快照", status: 404 as const }
+  // 记录 ID 要拼进 replay/results/<记录 ID>/：格式不对就不能用（挡 ../ 之类）。
+  if (!isSafeRecordId(detail.recordId)) return { error: "快照里的记录 ID 格式不对，先刷新快照", status: 400 as const }
   return { kbDir, detail }
 }
 

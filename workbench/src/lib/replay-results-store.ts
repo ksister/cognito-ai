@@ -104,6 +104,9 @@ export async function saveRunReview({
   reviewed: boolean
   at?: Date
 }): Promise<{ ok: true; run: ReplayRun } | { ok: false; error: string }> {
+  // 接口层已经挡过一次，这里再挡一次：这层是拼路径的最后一关。
+  if (!isSafeRecordId(recordId)) return { ok: false, error: "记录 ID 格式不对（只允许字母、数字和 _-）" }
+  if (!isValidRunId(runId)) return { ok: false, error: "运行 ID 格式不对" }
   const run = await readRun(kbDir, recordId, runId)
   if (!run) return { ok: false, error: "找不到这次运行的结果文件，可能已被清理，请重新识别一次" }
   const now = at.toISOString()

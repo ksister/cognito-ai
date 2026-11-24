@@ -9,6 +9,7 @@ import {
   estimateTokens,
   isBlankFieldReview,
   isReplayIssueType,
+  isSafeRecordId,
   isValidRunId,
   lastReviewedRun,
   latestRun,
@@ -205,8 +206,7 @@ describe("运行历史排序", () => {
   })
 })
 
-describe("newRunId / runLabel", () => {
-  it("格式固定、可用作文件名、能按时间排序", () => {
+describe("newRunId / runLabel", () => {  it("格式固定、可用作文件名、能按时间排序", () => {
     const a = newRunId(new Date("2026-11-24T09:05:12.000Z"), "a1b2")
     const b = newRunId(new Date("2026-11-24T09:05:13.000Z"), "a1b2")
     expect(a).toBe("20261124T090512-a1b2")
@@ -221,6 +221,23 @@ describe("newRunId / runLabel", () => {
 
   it("挡住了路径穿越式的名字", () => {
     expect(isValidRunId("../evil")).toBe(false)
+  })
+})
+
+describe("isSafeRecordId（拼路径前必须过）", () => {
+  it("正常的飞书记录 ID 通过", () => {
+    expect(isSafeRecordId("recvllXbSeV9QD")).toBe(true)
+    expect(isSafeRecordId("rec_a-1")).toBe(true)
+  })
+
+  it("路径穿越、空格、空串、超长都不行", () => {
+    expect(isSafeRecordId("../evil")).toBe(false)
+    expect(isSafeRecordId("rec/../evil")).toBe(false)
+    expect(isSafeRecordId("..\\evil")).toBe(false)
+    expect(isSafeRecordId("rec evil")).toBe(false)
+    expect(isSafeRecordId("")).toBe(false)
+    expect(isSafeRecordId(null)).toBe(false)
+    expect(isSafeRecordId("a".repeat(81))).toBe(false)
   })
 
   it("历史文案带模式、模型、提示词版本和核对状态", () => {

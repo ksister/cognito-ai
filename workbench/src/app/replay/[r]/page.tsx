@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/bits"
 import { ReplayCompare } from "@/components/replay-compare"
 import { loadFeishuSchemaState, resolveKbRoot } from "@/lib/feishu-schema-load"
 import { isValidReplayR } from "@/lib/replay-model"
-import { deriveRunState } from "@/lib/replay-result"
+import { deriveRunState, isSafeRecordId } from "@/lib/replay-result"
 import { listRuns } from "@/lib/replay-results-store"
 import { readRecordDetail } from "@/lib/replay-store"
 import { feishuFieldsFromDetail } from "@/lib/replay-run"
@@ -19,6 +19,8 @@ export default async function ReplayRecordPage({ params }: { params: Promise<{ r
   const kbDir = resolveKbRoot()
   const detail = await readRecordDetail(kbDir, r)
   if (!detail) notFound()
+  // 记录 ID 会拼进 replay/results/<记录 ID>/，格式不对就当没有这条记录。
+  if (!isSafeRecordId(detail.recordId)) notFound()
 
   const [runs, schemaState] = await Promise.all([listRuns(kbDir, detail.recordId), loadFeishuSchemaState()])
   const left = feishuFieldsFromDetail(detail)
