@@ -251,7 +251,7 @@ export function applyTranscript(
   }
 }
 
-/** Company/org prefixes that WeChat prepends to the display name, e.g. 「天云_殷杰」. */
+/** Company/org prefixes that WeChat prepends to the display name, e.g. 「天云_张三」. */
 const SPEAKER_COMPANY_PREFIXES = ["天云"]
 
 /**

@@ -274,41 +274,41 @@ describe("saved markdown", () => {
 
 describe("normalizeSpeakerName", () => {
   it("strips emoji", () => {
-    expect(normalizeSpeakerName("Lucas🐻")).toBe("Lucas")
-    expect(normalizeSpeakerName("Lucas🌹🌞💧")).toBe("Lucas")
+    expect(normalizeSpeakerName("张三🐻")).toBe("张三")
+    expect(normalizeSpeakerName("张三🌹🌞💧")).toBe("张三")
   })
-  it("strips the 天云_ / 天云 company prefix", () => {
-    expect(normalizeSpeakerName("天云_殷杰")).toBe("殷杰")
-    expect(normalizeSpeakerName("天云 殷杰")).toBe("殷杰")
+  it("strips the company prefix（见 transcript.ts 的 SPEAKER_COMPANY_PREFIXES）", () => {
+    expect(normalizeSpeakerName("天云_张三")).toBe("张三")
+    expect(normalizeSpeakerName("天云 张三")).toBe("张三")
   })
   it("leaves ordinary names alone", () => {
-    expect(normalizeSpeakerName("Lucas")).toBe("Lucas")
+    expect(normalizeSpeakerName("张三")).toBe("张三")
     expect(normalizeSpeakerName("张工")).toBe("张工")
   })
 })
 
 describe("mergeTranscripts", () => {
   const a: TranscriptTurn[] = [
-    { speaker: "Lucas", text: "问题A", kind: "speech" },
-    { speaker: "Lucas", text: "问题B", kind: "speech" },
-    { speaker: "Lucas", text: "问题C", kind: "speech" },
+    { speaker: "张三", text: "问题A", kind: "speech" },
+    { speaker: "张三", text: "问题B", kind: "speech" },
+    { speaker: "张三", text: "问题C", kind: "speech" },
   ]
   const b: TranscriptTurn[] = [
-    { speaker: "Lucas", text: "问题B", kind: "speech" },
-    { speaker: "Lucas", text: "问题C", kind: "speech" },
-    { speaker: "Lucas", text: "问题D", kind: "speech" },
+    { speaker: "张三", text: "问题B", kind: "speech" },
+    { speaker: "张三", text: "问题C", kind: "speech" },
+    { speaker: "张三", text: "问题D", kind: "speech" },
   ]
   it("drops the overlapping tail/head", () => {
     expect(mergeTranscripts(a, b).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
   })
   it("keeps everything when there is no overlap", () => {
-    const c: TranscriptTurn[] = [{ speaker: "Lucas", text: "问题E", kind: "speech" }]
+    const c: TranscriptTurn[] = [{ speaker: "张三", text: "问题E", kind: "speech" }]
     expect(mergeTranscripts(a, c).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题E"])
   })
   it("matches through emoji/company-prefix differences", () => {
     const c: TranscriptTurn[] = [
-      { speaker: "Lucas🐻", text: "问题C", kind: "speech" },
-      { speaker: "天云_殷杰", text: "问题D", kind: "speech" },
+      { speaker: "张三🐻", text: "问题C", kind: "speech" },
+      { speaker: "天云_张三", text: "问题D", kind: "speech" },
     ]
     expect(mergeTranscripts(a, c).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
   })

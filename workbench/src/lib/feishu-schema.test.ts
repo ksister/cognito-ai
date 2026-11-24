@@ -251,16 +251,16 @@ describe("defaultedUncertain", () => {
 })
 describe("mergeExtractParts", () => {
   it("合并短字段与长段落", () => {
-    const short = { title: "标题", customer: "锴士", uncertain: ["a"] }
+    const short = { title: "标题", customer: "示例客户甲", uncertain: ["a"] }
     const long = { problem: "问题", solution: "方案", needs: [{ pain: "p", idea: "i", type: "软件改进" }] }
     const merged = mergeExtractParts(short, long)
     expect(merged.title).toBe("标题")
-    expect(merged.customer).toBe("锴士")
+    expect(merged.customer).toBe("示例客户甲")
     expect(merged.problem).toBe("问题")
     expect(merged.needs).toHaveLength(1)
   })
   it("空值不覆盖另一侧的非空值", () => {
-    const short = { title: "标题", customer: "锴士" }
+    const short = { title: "标题", customer: "示例客户甲" }
     const long = { problem: "", solution: "  ", needs: [] }
     const merged = mergeExtractParts(short, long)
     expect(merged.problem).toBeUndefined()

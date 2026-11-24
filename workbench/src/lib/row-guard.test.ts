@@ -60,7 +60,7 @@ describe("row-guard：更新飞书行之前的核对（T31）", () => {
 
   it("人员/多选这类列表仍用顿号连接", () => {
     expect(cellText(["2D", "3D"])).toBe("2D、3D")
-    expect(cellText([{ name: "张珂" }, { name: "李四" }])).toBe("张珂、李四")
+    expect(cellText([{ name: "张三" }, { name: "李四" }])).toBe("张三、李四")
   })
 })
 
