@@ -3,7 +3,7 @@ import { changedFieldLabels, mergeReorganizedDraft } from "./reorganize"
 import { emptyDraft } from "./types"
 
 function base() {
-  const d = emptyDraft("锴士")
+  const d = emptyDraft("示例客户甲")
   return {
     ...d,
     title: "平面拟合后Z偏移",
@@ -11,7 +11,7 @@ function base() {
     product: "4.4.5",
     problem: "原始问题描述",
     solution: "原始方案",
-    chat: "[OCR 转写，以截图为准]\nLucas：问题A",
+    chat: "[OCR 转写，以截图为准]\n张三：问题A",
     thoughts: "我的思考原文",
     uncertain: ["客户身份未明确"],
   }
