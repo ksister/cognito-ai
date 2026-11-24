@@ -45,6 +45,11 @@ export type ReplayRecordDetail = {
   solution: string
   attachments: ReplayAttachmentRef[]
   shots: ReplayShotRef[]
+  /**
+   * T27：表结构里全部字段的文本值（key → 文本），左右对比的左列。
+   * 老快照没有这个字段，刷新一次快照就会补上（refresh 会把缺 fields 的明细重写一遍）。
+   */
+  fields?: Record<string, string>
   /** 这条记录的 R 编号是从哪来的：T25 导出 / 新分配。 */
   numberSource: "t25" | "new"
   importedAt: string
@@ -93,20 +98,20 @@ export function rLabel(seq: number): string {
   return `R${String(seq).padStart(3, "0")}`
 }
 
+/** 页面/接口收到的 R 编号：只认 R001 这种，挡住拼路径的输入。 */
+export function isValidReplayR(r: unknown): boolean {
+  return typeof r === "string" && /^R\d{3,4}$/.test(r)
+}
+
 /** 「飞书为空」：问题描述、解决方案两列都为空（T26 验收用）。 */
 export function isFeishuEmpty(problem: string | null | undefined, solution: string | null | undefined): boolean {
   return !String(problem ?? "").trim() && !String(solution ?? "").trim()
 }
 
 /**
- * 测试状态：没有运行过 = 未测；跑过但有任何一个问题类型 = 有问题；否则已测。
- * T27 写的结果文件里，`issues` 非空表示这条结果被标了问题。
+ * 测试状态：T27 起由「最近一次核对过的运行」决定，实现在 replay-result.ts 的 deriveRunState
+ * （跑过但没点「完成核对」仍算未测）。这里只保留状态类型和文案。
  */
-export function deriveReplayStatus(runs: { issues?: unknown }[]): ReplayStatus {
-  if (!runs.length) return "untested"
-  const hasIssue = runs.some((r) => Array.isArray(r.issues) && r.issues.length > 0)
-  return hasIssue ? "issue" : "tested"
-}
 
 export type NumberAssignment = {
   /** recordId → R 编号。 */
@@ -219,6 +224,8 @@ export type ReplayListRow = {
   screenshotCount: number
   feishuEmpty: boolean
   status: ReplayStatus
+  /** T27：有比最近一次核对过的运行更新的结果，还没点「完成核对」。 */
+  pendingReview?: boolean
 }
 
 export type ReplayListFilter = {

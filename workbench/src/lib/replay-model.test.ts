@@ -3,7 +3,6 @@ import {
   assignReplayNumbers,
   averageUsage,
   countReplayRows,
-  deriveReplayStatus,
   emptyReplayFilter,
   filterReplayRows,
   formatBytes,
@@ -131,14 +130,11 @@ describe("assignReplayNumbers", () => {
   })
 })
 
-describe("deriveReplayStatus", () => {
-  it("没跑过是未测", () => {
-    expect(deriveReplayStatus([])).toBe("untested")
+describe("statusLabel", () => {
+  it("三种状态的文案", () => {
     expect(statusLabel("untested")).toBe("未测")
-  })
-  it("跑过没标问题算已测，标了问题算有问题", () => {
-    expect(deriveReplayStatus([{}, { issues: [] }])).toBe("tested")
-    expect(deriveReplayStatus([{ issues: ["漏了信息"] }])).toBe("issue")
+    expect(statusLabel("tested")).toBe("已测")
+    expect(statusLabel("issue")).toBe("有问题")
   })
 })
 

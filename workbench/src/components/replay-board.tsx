@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import Link from "next/link"
 import { Search } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -28,8 +29,8 @@ function toggleClass(active: boolean) {
   )
 }
 
-function placeholder(kind: "retry" | "qa") {
-  toast(kind === "retry" ? "「重新识别」是后续任务 T27，这次只留位置。" : "「模拟问答」是后续任务 T29，这次只留位置。")
+function placeholder(kind: "qa") {
+  toast(kind === "qa" ? "「模拟问答」是后续任务 T29，这次只留位置。" : "")
 }
 
 export function ReplayBoard({ rows }: { rows: ReplayRow[] }) {
@@ -128,17 +129,21 @@ export function ReplayBoard({ rows }: { rows: ReplayRow[] }) {
                     飞书为空
                   </Badge>
                 )}
+                {row.pendingReview && (
+                  <Badge variant="outline" className="border-sky-200 bg-sky-50 text-sky-700">
+                    有新结果待核对
+                  </Badge>
+                )}
                 <Badge variant="outline" className={STATUS_STYLE[row.status]}>
                   {statusLabel(row.status)}
                 </Badge>
                 <div className="flex shrink-0 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => placeholder("retry")}
-                    className="h-7 rounded-lg border bg-background px-2.5 text-xs font-medium hover:bg-muted"
+                  <Link
+                    href={`/replay/${row.r}`}
+                    className="inline-flex h-7 items-center rounded-lg border bg-background px-2.5 text-xs font-medium hover:bg-muted"
                   >
                     重新识别
-                  </button>
+                  </Link>
                   <button
                     type="button"
                     onClick={() => placeholder("qa")}

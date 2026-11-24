@@ -29,7 +29,14 @@ export function aiLabel() {
   return API_KEY ? `${MODEL}` : "未配置（规则提取）"
 }
 
-async function chatJson<T>(system: string, user: string): Promise<T> {
+/** T27 结果里要记下用的是哪个模型。 */
+export function aiModelName() {
+  return MODEL
+}
+
+export type AiUsage = { promptTokens: number; completionTokens: number }
+
+async function chatJsonWithUsage<T>(system: string, user: string): Promise<{ data: T; usage: AiUsage }> {
   const res = await fetch(`${BASE_URL}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${API_KEY}` },
@@ -49,22 +56,36 @@ async function chatJson<T>(system: string, user: string): Promise<T> {
   const text: string = json.choices?.[0]?.message?.content ?? ""
   const match = text.match(/\{[\s\S]*\}/)
   if (!match) throw new Error("AI 返回内容不是 JSON")
-  return JSON.parse(match[0]) as T
+  const usage = json?.usage ?? {}
+  return {
+    data: JSON.parse(match[0]) as T,
+    usage: {
+      promptTokens: Number(usage.prompt_tokens ?? 0) || 0,
+      completionTokens: Number(usage.completion_tokens ?? 0) || 0,
+    },
+  }
 }
 
-export async function extractRecord(
+async function chatJson<T>(system: string, user: string): Promise<T> {
+  return (await chatJsonWithUsage<T>(system, user)).data
+}
+
+async function extractRecordCore(
   chat: string,
   opts: { customer?: string; me?: string; profile?: string },
-): Promise<ExtractResult> {
+): Promise<{ result: ExtractResult; usage: AiUsage | null }> {
   const schemaState = await loadFeishuSchemaState()
   if (!schemaState.ok) throw new FeishuSchemaError(schemaState.error)
   const schema = schemaState.schema
   if (!API_KEY) {
     return {
-      mode: "rules",
-      draft: constrainDraftSelects(rulesExtract(chat, opts.me), schema),
-      warning: "未配置 AI_API_KEY，已用规则做初步提取，请重点核对问题描述和解决方案。",
-      source: "paste",
+      result: {
+        mode: "rules",
+        draft: constrainDraftSelects(rulesExtract(chat, opts.me), schema),
+        warning: "未配置 AI_API_KEY，已用规则做初步提取，请重点核对问题描述和解决方案。",
+        source: "paste",
+      },
+      usage: null,
     }
   }
   try {
@@ -78,20 +99,44 @@ export async function extractRecord(
       .join("\n\n")
     // D19: two parallel requests — short fields (A) and long paragraphs (B).
     const [shortPart, longPart] = await Promise.all([
-      chatJson<Record<string, unknown>>(buildExtractSystem(schema, "paste", "short"), user),
-      chatJson<Record<string, unknown>>(buildExtractSystem(schema, "paste", "long"), user),
+      chatJsonWithUsage<Record<string, unknown>>(buildExtractSystem(schema, "paste", "short"), user),
+      chatJsonWithUsage<Record<string, unknown>>(buildExtractSystem(schema, "paste", "long"), user),
     ])
-    const merged = mergeExtractParts(shortPart, longPart)
-    return { mode: "ai", draft: normalizeExtractedDraft(merged, schema), source: "paste" }
+    const merged = mergeExtractParts(shortPart.data, longPart.data)
+    return {
+      result: { mode: "ai", draft: normalizeExtractedDraft(merged, schema), source: "paste" },
+      usage: {
+        promptTokens: shortPart.usage.promptTokens + longPart.usage.promptTokens,
+        completionTokens: shortPart.usage.completionTokens + longPart.usage.completionTokens,
+      },
+    }
   } catch (e) {
     if (e instanceof FeishuSchemaError) throw e
     return {
-      mode: "rules",
-      draft: constrainDraftSelects(rulesExtract(chat, opts.me), schema),
-      warning: `AI 调用失败（${(e as Error).message}），已改用规则提取。`,
-      source: "paste",
+      result: {
+        mode: "rules",
+        draft: constrainDraftSelects(rulesExtract(chat, opts.me), schema),
+        warning: `AI 调用失败（${(e as Error).message}），已改用规则提取。`,
+        source: "paste",
+      },
+      usage: null,
     }
   }
+}
+
+export async function extractRecord(
+  chat: string,
+  opts: { customer?: string; me?: string; profile?: string },
+): Promise<ExtractResult> {
+  return (await extractRecordCore(chat, opts)).result
+}
+
+/** T27：同样的提取，但把 token 用量带出来写进回放结果。 */
+export async function extractRecordWithUsage(
+  chat: string,
+  opts: { customer?: string; me?: string; profile?: string },
+): Promise<{ result: ExtractResult; usage: AiUsage | null }> {
+  return extractRecordCore(chat, opts)
 }
 
 type Msg = { who: string; text: string; date?: string }

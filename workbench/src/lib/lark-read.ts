@@ -304,6 +304,8 @@ export type TableRecordView = {
   localTranscript: string
   localFile: string
   attachments: AttachmentInfo[]
+  /** T27：表结构配置里的全部字段（key → 文本），左右对比用；日期已转成 YYYY-MM-DD。 */
+  fields: Record<string, string>
 }
 
 /**
@@ -322,6 +324,11 @@ export function buildRecordView(
     const i = columns.findIndex((c) => c.toLowerCase() === String(name).toLowerCase())
     return i >= 0 ? row.cells[i] : null
   }
+  const fields: Record<string, string> = {}
+  for (const key of Object.keys(columnNames)) {
+    if (!key || key === "attachment") continue
+    fields[key] = key === "date" ? dateOnly(cell(key)) : cellText(cell(key)).trim()
+  }
   const localId = cellText(cell("local_id")).trim()
   const local = (localId && localIndex.byLocalId.get(localId)) || localIndex.byFeishuId.get(row.recordId) || null
   return {
@@ -335,6 +342,7 @@ export function buildRecordView(
     localTranscript: local?.chat || "",
     localFile: local?.file ?? "",
     attachments: attachmentList(cell("attachment")),
+    fields,
   }
 }
 

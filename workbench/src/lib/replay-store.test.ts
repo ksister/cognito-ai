@@ -10,7 +10,6 @@ import {
   loadT25Cache,
   mediaDir,
   readReplayManifest,
-  readReplayStatuses,
   recordDetailPath,
   resultsDir,
   snapshotDir,
@@ -20,6 +19,7 @@ import {
   writeRecordDetail,
   writeReplayManifest,
 } from "./replay-store"
+import { listRuns } from "./replay-results-store"
 import type { ReplayManifest } from "./replay-model"
 
 let root = ""
@@ -159,22 +159,18 @@ describe("T25 缓存", () => {
   })
 })
 
-describe("测试状态", () => {
-  it("没有结果目录 = 全部未测", async () => {
-    const statuses = await readReplayStatuses(path.join(root, "kb-no-results"))
-    expect(statuses.size).toBe(0)
+describe("results 目录", () => {
+  it("没有结果目录时读出来是空列表", async () => {
+    const kb = path.join(root, "kb-no-results")
+    expect(await listRuns(kb, "recA")).toEqual([])
   })
 
-  it("跑过算已测，标了问题算有问题", async () => {
-    const kb = path.join(root, "kb-results")
+  it("坏掉的结果文件被跳过，不影响其他文件", async () => {
+    const kb = path.join(root, "kb-broken-results")
     const dir = path.join(resultsDir(kb), "recA")
     await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, "20261124-101500-reorganize.json"), JSON.stringify({ issues: [] }), "utf8")
-    const dirB = path.join(resultsDir(kb), "recB")
-    await fs.mkdir(dirB, { recursive: true })
-    await fs.writeFile(path.join(dirB, "20261124-101500-retranscribe.json"), JSON.stringify({ issues: ["说话人认错"] }), "utf8")
-    const statuses = await readReplayStatuses(kb)
-    expect(statuses.get("recA")).toBe("tested")
-    expect(statuses.get("recB")).toBe("issue")
+    await fs.writeFile(path.join(dir, "20261124T101500-aaaa.json"), "{ 坏 JSON", "utf8")
+    await fs.writeFile(path.join(dir, "20261124T101500-bbbb.json"), JSON.stringify({ version: 1 }), "utf8")
+    expect(await listRuns(kb, "recA")).toEqual([])
   })
 })

@@ -2,7 +2,7 @@ import fs from "node:fs"
 import fsp from "node:fs/promises"
 import path from "node:path"
 import { createHash } from "node:crypto"
-import { deriveReplayStatus, type ReplayManifest, type ReplayRecordDetail, type ReplayStatus } from "./replay-model.ts"
+import { type ReplayManifest, type ReplayRecordDetail } from "./replay-model.ts"
 
 /**
  * T26 回放快照的磁盘布局（全部在 KB_DIR 下，不进仓库）：
@@ -267,37 +267,5 @@ export async function sampleUsageFromCache(
   return out
 }
 
-// ——— T27 结果 → 测试状态 ————————————————
+// T27 的结果（replay/results/）在 replay-results-store.ts；这里只提供目录和原子写。
 
-/**
- * 扫 replay/results/<recordId>/*.json，得出每条记录的状态。
- * T26 阶段这个目录不存在，所以全部是「未测」。
- */
-export async function readReplayStatuses(kbDir: string): Promise<Map<string, ReplayStatus>> {
-  const root = resultsDir(kbDir)
-  const out = new Map<string, ReplayStatus>()
-  let dirs: string[]
-  try {
-    dirs = (await fsp.readdir(root, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name)
-  } catch {
-    return out
-  }
-  for (const recordId of dirs) {
-    const dir = path.join(root, recordId)
-    let runs: { issues?: unknown }[] = []
-    try {
-      const names = (await fsp.readdir(dir)).filter((n) => n.endsWith(".json"))
-      for (const name of names) {
-        try {
-          runs.push(JSON.parse(await fsp.readFile(path.join(dir, name), "utf8")))
-        } catch {
-          /* 坏结果跳过 */
-        }
-      }
-    } catch {
-      runs = []
-    }
-    out.set(recordId, deriveReplayStatus(runs))
-  }
-  return out
-}
