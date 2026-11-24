@@ -250,6 +250,32 @@ export function filterReplayRows<T extends ReplayListRow>(rows: T[], filter: Rep
   })
 }
 
+export type ReplayRowCounts = {
+  /** 全部记录数（「全部」这一段显示的就是它）。 */
+  total: number
+  /** 带截图的记录数（「带截图」这一段显示的就是它）。 */
+  withScreenshots: number
+  /** 下面三个数跟着当前范围走：带截图模式下只数带截图的记录。 */
+  feishuEmpty: number
+  byStatus: Record<ReplayStatus, number>
+}
+
+/**
+ * 筛选按钮上的数字（11-24 用户反馈：「飞书为空」显示 16，列表里只有 11 条）。
+ * 数字必须和当前范围一致：带截图模式只统计带截图的记录，全部模式才是全量。
+ */
+export function countReplayRows(rows: ReplayListRow[], scope: "shots" | "all"): ReplayRowCounts {
+  const inScope = scope === "shots" ? rows.filter((r) => r.screenshotCount > 0) : rows
+  const byStatus: Record<ReplayStatus, number> = { untested: 0, tested: 0, issue: 0 }
+  for (const row of inScope) byStatus[row.status]++
+  return {
+    total: rows.length,
+    withScreenshots: rows.filter((r) => r.screenshotCount > 0).length,
+    feishuEmpty: inScope.filter((r) => r.feishuEmpty).length,
+    byStatus,
+  }
+}
+
 // ——— 费用与耗时估算（只输出数量，不带任何客户数据） ————————————
 
 export type TokenAverage = { promptTokens: number; completionTokens: number; ms: number }

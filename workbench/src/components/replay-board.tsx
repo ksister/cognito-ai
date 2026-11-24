@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 import type { ReplayStatus } from "@/lib/replay-model"
-import { filterReplayRows, statusLabel, type ReplayListRow } from "@/lib/replay-model"
+import { countReplayRows, filterReplayRows, statusLabel, type ReplayListRow } from "@/lib/replay-model"
 
 export type ReplayRow = ReplayListRow
 
@@ -18,7 +18,15 @@ const STATUS_STYLE: Record<ReplayStatus, string> = {
   issue: "bg-amber-50 text-amber-700 border-amber-200",
 }
 
-const CHIPS: ReplayStatus[] = ["untested", "tested", "issue"]
+const STATUS_TOGGLES: ReplayStatus[] = ["untested", "tested", "issue"]
+
+/** 开关选中用和侧栏选中项一样的浅蓝；关着是普通描边。黄色只留给行内的「飞书为空」标签。 */
+function toggleClass(active: boolean) {
+  return cn(
+    "h-8 rounded-lg border px-2.5 text-xs font-medium transition-colors",
+    active ? "border-primary/40 bg-primary/10 text-primary" : "bg-background hover:bg-muted",
+  )
+}
 
 function placeholder(kind: "retry" | "qa") {
   toast(kind === "retry" ? "「重新识别」是后续任务 T27，这次只留位置。" : "「模拟问答」是后续任务 T29，这次只留位置。")
@@ -30,16 +38,8 @@ export function ReplayBoard({ rows }: { rows: ReplayRow[] }) {
   const [emptyOnly, setEmptyOnly] = useState(false)
   const [scope, setScope] = useState<"shots" | "all">("shots")
 
-  const counts = useMemo(() => {
-    const byStatus: Record<ReplayStatus, number> = { untested: 0, tested: 0, issue: 0 }
-    for (const row of rows) byStatus[row.status]++
-    return {
-      total: rows.length,
-      byStatus,
-      feishuEmpty: rows.filter((r) => r.feishuEmpty).length,
-      withShots: rows.filter((r) => r.screenshotCount > 0).length,
-    }
-  }, [rows])
+  // 数字跟着当前范围走：带截图模式下只统计带截图的记录。
+  const counts = useMemo(() => countReplayRows(rows, scope), [rows, scope])
 
   const visible = useMemo(
     () => filterReplayRows(rows, { q, status, emptyOnly, scope }),
@@ -61,15 +61,15 @@ export function ReplayBoard({ rows }: { rows: ReplayRow[] }) {
             />
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
-            {CHIPS.map((chip) => (
+            <button type="button" onClick={() => setEmptyOnly((v) => !v)} className={toggleClass(emptyOnly)} aria-pressed={emptyOnly}>
+              飞书为空 {counts.feishuEmpty}
+            </button>
+            {STATUS_TOGGLES.map((chip) => (
               <button
                 key={chip}
                 type="button"
                 onClick={() => setStatus((cur) => (cur === chip ? "all" : chip))}
-                className={cn(
-                  "h-8 rounded-lg border px-2.5 text-xs font-medium transition-colors",
-                  status === chip ? "border-primary/40 bg-primary/10 text-primary" : "bg-background hover:bg-muted",
-                )}
+                className={toggleClass(status === chip)}
                 aria-pressed={status === chip}
               >
                 {statusLabel(chip)} {counts.byStatus[chip]}
@@ -79,28 +79,32 @@ export function ReplayBoard({ rows }: { rows: ReplayRow[] }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2 text-xs">
-          <button
-            type="button"
-            onClick={() => setScope((s) => (s === "shots" ? "all" : "shots"))}
-            className="h-7 rounded-lg border bg-background px-2.5 font-medium hover:bg-muted"
-            aria-pressed={scope === "shots"}
-          >
-            {scope === "shots" ? `带截图 ${counts.withShots}` : `全部 ${counts.total}`}
-          </button>
-          <button
-            type="button"
-            onClick={() => setEmptyOnly((v) => !v)}
-            className={cn(
-              "h-7 rounded-lg border px-2.5 font-medium transition-colors",
-              emptyOnly ? "border-amber-300 bg-amber-50 text-amber-800" : "bg-background hover:bg-muted",
-            )}
-            aria-pressed={emptyOnly}
-          >
-            飞书为空 {counts.feishuEmpty}
-          </button>
+          <div className="flex items-center" role="group" aria-label="显示范围">
+            <button
+              type="button"
+              onClick={() => setScope("shots")}
+              aria-pressed={scope === "shots"}
+              className={cn(
+                "h-7 rounded-l-lg border px-2.5 font-medium transition-colors",
+                scope === "shots" ? "border-primary/40 bg-primary/10 text-primary" : "bg-background hover:bg-muted",
+              )}
+            >
+              带截图 {counts.withScreenshots}
+            </button>
+            <button
+              type="button"
+              onClick={() => setScope("all")}
+              aria-pressed={scope === "all"}
+              className={cn(
+                "h-7 rounded-r-lg border border-l-0 px-2.5 font-medium transition-colors",
+                scope === "all" ? "border-primary/40 bg-primary/10 text-primary" : "bg-background hover:bg-muted",
+              )}
+            >
+              全部 {counts.total}
+            </button>
+          </div>
           <span className="text-muted-foreground">
-            筛选后 {visible.length} 条
-            {scope === "shots" && counts.total > counts.withShots ? `（另有 ${counts.total - counts.withShots} 条无截图）` : ""}
+            筛选后 {visible.length} 条{status !== "all" ? `（只显示「${statusLabel(status)}」）` : ""}
           </span>
         </div>
 
@@ -117,9 +121,13 @@ export function ReplayBoard({ rows }: { rows: ReplayRow[] }) {
                   <p className="truncate text-sm font-medium">{row.title || "（无问题名称）"}</p>
                   <p className="truncate text-xs text-muted-foreground">
                     {[row.customer || "（无客户）", row.date || "（无日期）", `截图 ${row.screenshotCount}`].join(" · ")}
-                    {row.feishuEmpty ? " · 飞书为空" : ""}
                   </p>
                 </div>
+                {row.feishuEmpty && (
+                  <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                    飞书为空
+                  </Badge>
+                )}
                 <Badge variant="outline" className={STATUS_STYLE[row.status]}>
                   {statusLabel(row.status)}
                 </Badge>

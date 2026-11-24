@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   assignReplayNumbers,
   averageUsage,
+  countReplayRows,
   deriveReplayStatus,
   emptyReplayFilter,
   filterReplayRows,
@@ -211,6 +212,51 @@ describe("filterReplayRows", () => {
   it("大小写和空格不影响", () => {
     expect(filterReplayRows(rows, { ...base, q: "  r00  " }).map((r) => r.r)).toEqual(["R001", "R003"])
     expect(filterReplayRows(rows, { ...base, q: " r001 " }).map((r) => r.r)).toEqual(["R001"])
+  })
+})
+
+describe("countReplayRows（数字要跟当前范围一致）", () => {
+  const rows: ReplayListRow[] = [
+    { r: "R001", title: "a", customer: "甲", date: "2026-01-01", screenshotCount: 2, feishuEmpty: true, status: "untested" },
+    { r: "R002", title: "b", customer: "乙", date: "2026-01-02", screenshotCount: 1, feishuEmpty: false, status: "untested" },
+    { r: "R003", title: "c", customer: "丙", date: "2026-01-03", screenshotCount: 3, feishuEmpty: false, status: "issue" },
+    { r: "R004", title: "d", customer: "丁", date: "2026-01-04", screenshotCount: 0, feishuEmpty: true, status: "untested" },
+    { r: "R005", title: "e", customer: "戊", date: "2026-01-05", screenshotCount: 0, feishuEmpty: false, status: "tested" },
+  ]
+
+  it("带截图模式：只统计带截图的记录", () => {
+    const c = countReplayRows(rows, "shots")
+    expect(c.withScreenshots).toBe(3)
+    expect(c.total).toBe(5)
+    expect(c.feishuEmpty).toBe(1)
+    expect(c.byStatus).toEqual({ untested: 2, tested: 0, issue: 1 })
+  })
+
+  it("全部模式：全量统计", () => {
+    const c = countReplayRows(rows, "all")
+    expect(c.withScreenshots).toBe(3)
+    expect(c.total).toBe(5)
+    expect(c.feishuEmpty).toBe(2)
+    expect(c.byStatus).toEqual({ untested: 3, tested: 1, issue: 1 })
+  })
+
+  it("按钮上的数字等于实际筛出来的条数（11-24 用户踩的坑：16 显示、11 条）", () => {
+    for (const scope of ["shots", "all"] as const) {
+      const c = countReplayRows(rows, scope)
+      expect(filterReplayRows(rows, { ...emptyReplayFilter(), scope, emptyOnly: true })).toHaveLength(c.feishuEmpty)
+      for (const status of ["untested", "tested", "issue"] as const) {
+        expect(filterReplayRows(rows, { ...emptyReplayFilter(), scope, status })).toHaveLength(c.byStatus[status])
+      }
+    }
+  })
+
+  it("空列表不报错", () => {
+    expect(countReplayRows([], "shots")).toEqual({
+      total: 0,
+      withScreenshots: 0,
+      feishuEmpty: 0,
+      byStatus: { untested: 0, tested: 0, issue: 0 },
+    })
   })
 })
 
