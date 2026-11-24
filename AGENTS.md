@@ -2,6 +2,8 @@
 
 > 任何 AI（Claude Code / Cursor / Codex / ChatGPT 等）开始工作前，先读这个文件，再读 `01-me/` 下的文件。
 
+> **硬规则：不要把客户数据读进会话。** 会话里输出的一切都会发给模型服务商。不要用 `cat`、`type`、`Get-Content`、编辑器预览或任何会打印内容的命令查看 `KB_DIR` 下的文件（`customers/`、`replay/`、`exports/`、`config/`）和 `.env.local`。需要核对时写 node 脚本，只输出数量、布尔值、键名和文件名。违反过 3 次（见交接说明坑 22）。
+
 ## 你在哪里
 这是我的个人工作知识库（"第二大脑"）。全部是纯 Markdown 文件，按 PARA 方法组织：
 
