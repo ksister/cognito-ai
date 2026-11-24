@@ -21,30 +21,39 @@
  *   <KB_DIR>/exports/_t25-work/                  临时目录：下载的截图、逐图转写、断点索引（用完可整目录删）
  *   <KB_DIR>/exports/聊天记录汇总-YYYY-MM-DD.md   汇总（太大时按客户拆成 -01.md、-02.md…，另出索引）
  *
- * 复用：downloadRecordAttachments() 是通用附件下载函数（B 以后也能用）。
+ * 复用：只读读取、附件下载、价格、转写都在 ../src/lib/ 里（T26 回放快照共用同一份），
+ *       本脚本只保留汇总 md 的排版和断点续跑逻辑。
  *
  * 隐私：脚本只打印数量和布尔值，不打印聊天内容、客户名和任何凭据。
  */
 import fs from "node:fs"
 import fsp from "node:fs/promises"
 import path from "node:path"
-import { execFile } from "node:child_process"
-import matter from "gray-matter"
-import sharp from "sharp"
 import {
   OCR_TRANSCRIPT_MARKER,
-  VL_TRANSCRIPT_RULE,
-  cleanWindowTitle,
-  dropTitleTurns,
-  failedScreenshotTurn,
   formatScreenshotChat,
   mergeTranscripts,
-  parseTranscript,
 } from "../src/lib/transcript.ts"
+import { NON_CHAT_LABELS, normalizeNonChatLabel, transcribeImageFile } from "../src/lib/vl-transcribe.ts"
+import { runPool } from "../src/lib/concurrency.ts"
+import {
+  attachmentKind,
+  attachColumnName,
+  buildRecordView,
+  cellText,
+  dateOnly,
+  downloadRecordAttachments,
+  indexLocalRecords,
+  listFeishuFields,
+  listFeishuRecords,
+  loadColumnNames,
+  parseCliJson,
+  scanLocalRecords,
+} from "../src/lib/lark-read.ts"
+import { estimateCost, priceFor, readModelPrices } from "../src/lib/model-prices.ts"
+import { loadDotEnv } from "../src/lib/dotenv.ts"
 
 const SCRIPT_DIR = import.meta.dirname
-const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"])
-const NON_CHAT_LABELS = ["报错", "界面", "效果图"]
 const REPORT_MAX_CHARS = 300_000 // 单个 md 超过这个字符数就按客户拆文件
 const DEFAULT_WORK_NAME = "_t25-work"
 
@@ -56,24 +65,6 @@ const USAGE = `T25 历史聊天记录导出（只读）
   node scripts/t25-export-history.mjs selftest`
 
 // ——— 环境与配置（不打印取值） ————————————————————————————————
-
-/** 读 .env.local（不覆盖已在环境里的值）；只解析 KEY=VALUE。 */
-export function loadDotEnv(file) {
-  if (!fs.existsSync(file)) return
-  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/)
-    if (!m) continue
-    if (process.env[m[1]] !== undefined) continue
-    let v = m[2].trim()
-    if (
-      (v.startsWith('"') && v.endsWith('"') && v.length >= 2) ||
-      (v.startsWith("'") && v.endsWith("'") && v.length >= 2)
-    ) {
-      v = v.slice(1, -1)
-    }
-    process.env[m[1]] = v
-  }
-}
 
 function loadEnv() {
   loadDotEnv(path.resolve(SCRIPT_DIR, "..", ".env.local"))
@@ -123,490 +114,6 @@ function workDir(cfg, args) {
 
 function todayStamp() {
   return new Date().toISOString().slice(0, 10)
-}
-
-// ——— lark-cli（只读调用） ————————————————————————————————
-
-export function runCli(cliPath, args, { cwd, timeoutMs = 180_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      cliPath,
-      args,
-      { cwd, maxBuffer: 256 * 1024 * 1024, windowsHide: true, encoding: "utf8", timeout: timeoutMs },
-      (err, stdout, stderr) => {
-        if (err && err.killed) return reject(new Error("lark-cli 超时"))
-        if (err) {
-          const detail = String(stderr || stdout || err.message).trim().slice(0, 400)
-          return reject(new Error(`lark-cli 调用失败：${detail}`))
-        }
-        resolve(stdout)
-      },
-    )
-  })
-}
-
-/** lark-cli 会在 JSON 前后打日志；取最后一个 JSON 对象。 */
-export function parseCliJson(text) {
-  const t = String(text ?? "").trim()
-  if (!t) throw new Error("lark-cli 没有输出")
-  try {
-    return JSON.parse(t)
-  } catch {
-    const m = t.match(/\{[\s\S]*\}\s*$/)
-    if (!m) throw new Error("lark-cli 输出不是 JSON")
-    return JSON.parse(m[0])
-  }
-}
-
-export function cliErrorText(json) {
-  const e = json?.error
-  if (e && typeof e === "object") return [e.type, e.subtype, e.message, e.hint].filter(Boolean).join(" / ")
-  if (typeof e === "string") return e
-  return String(json?.msg || json?.message || "lark-cli error")
-}
-
-function assertCliOk(json, what) {
-  if (json?.ok === false) throw new Error(`${what}失败：${cliErrorText(json)}`)
-  return json
-}
-
-/** 字段列表（name/type/选项数量）。只读。 */
-export async function listFields({ cliPath, baseToken, tableId }) {
-  const stdout = await runCli(cliPath, [
-    "base",
-    "+field-list",
-    "--base-token",
-    baseToken,
-    "--table-id",
-    tableId,
-    "--as",
-    "user",
-    "--format",
-    "json",
-  ])
-  const json = assertCliOk(parseCliJson(stdout), "读取字段列表")
-  const fields = json?.data?.fields ?? json?.data?.items ?? []
-  if (!Array.isArray(fields) || !fields.length) throw new Error("读取字段列表失败：没有字段")
-  return fields.map((f) => ({
-    name: String(f.name ?? ""),
-    type: String(f.type ?? ""),
-    options: Array.isArray(f.options) ? f.options.length : 0,
-  }))
-}
-
-/** 分页读全部记录（只读）。cells 与 columns 同序。 */
-export async function listRecords({ cliPath, baseToken, tableId, pageSize = 200 }) {
-  const records = []
-  let columns = []
-  let offset = 0
-  for (;;) {
-    const stdout = await runCli(cliPath, [
-      "base",
-      "+record-list",
-      "--base-token",
-      baseToken,
-      "--table-id",
-      tableId,
-      "--limit",
-      String(pageSize),
-      "--offset",
-      String(offset),
-      "--as",
-      "user",
-      "--format",
-      "json",
-    ])
-    const json = assertCliOk(parseCliJson(stdout), "读取记录")
-    const data = json?.data ?? {}
-    if (!Array.isArray(data.data) || !Array.isArray(data.record_id_list)) {
-      throw new Error("读取记录失败：返回结构不符（缺少 data.data / record_id_list）")
-    }
-    if (!columns.length) columns = (data.fields ?? []).map(String)
-    data.data.forEach((row, i) => {
-      records.push({ recordId: String(data.record_id_list[i] ?? ""), cells: row })
-    })
-    if (!data.has_more || data.data.length === 0) break
-    offset += data.data.length
-  }
-  return { columns, records }
-}
-
-/**
- * 下载一条记录的全部附件（通用函数，B 以后可复用）。
- * lark-cli 要求 --output 是当前目录下的相对路径，所以下载时把 cwd 切到目标目录。
- * 同一条记录里重名文件由 lark-cli 自己加序号；调用方按 file_token 对应。
- */
-export async function downloadRecordAttachments({ cliPath, baseToken, tableId, recordId, destDir, timeoutMs, overwrite = true }) {
-  await fsp.mkdir(destDir, { recursive: true })
-  const args = [
-    "base",
-    "+record-download-attachment",
-    "--base-token",
-    baseToken,
-    "--table-id",
-    tableId,
-    "--record-id",
-    recordId,
-    "--output",
-    ".",
-    "--as",
-    "user",
-    "--format",
-    "json",
-  ]
-  if (overwrite) args.splice(args.indexOf("--as"), 0, "--overwrite")
-  const stdout = await runCli(cliPath, args, { cwd: destDir, timeoutMs })
-  const json = assertCliOk(parseCliJson(stdout), "下载附件")
-  const items = json?.data?.downloaded
-  if (!Array.isArray(items)) throw new Error("下载附件失败：返回里没有 data.downloaded")
-  const files = []
-  for (const it of items) {
-    const saved = String(it.saved_path ?? "")
-    const token = String(it.file_token ?? "")
-    if (!saved || !token) throw new Error("下载附件失败：缺少 saved_path / file_token")
-    const abs = path.isAbsolute(saved) ? saved : path.join(destDir, saved)
-    if (!fs.existsSync(abs)) throw new Error("下载附件失败：文件没落盘")
-    files.push({
-      token,
-      name: String(it.name ?? path.basename(abs)),
-      size: Number(it.size_bytes ?? it.size ?? fs.statSync(abs).size),
-      savedPath: abs,
-    })
-  }
-  return files
-}
-
-// ——— 记录解析（纯函数） ————————————————————————————————
-
-/** 飞书单元格 → 纯文本（保留换行）。 */
-export function cellText(v) {
-  if (v == null) return ""
-  if (typeof v === "string") return v
-  if (typeof v === "number" || typeof v === "boolean") return String(v)
-  if (Array.isArray(v)) {
-    return v
-      .map((x) => {
-        if (x == null) return ""
-        if (typeof x === "string") return x
-        if (typeof x === "object") return String(x.text ?? x.name ?? x.link ?? "")
-        return String(x)
-      })
-      .filter(Boolean)
-      .join(" ")
-  }
-  if (typeof v === "object") return String(v.text ?? v.link ?? v.name ?? "")
-  return String(v)
-}
-
-/** 飞书附件单元格 → {token,name,size} 列表。 */
-export function attachmentList(v) {
-  if (!Array.isArray(v)) return []
-  const out = []
-  for (const it of v) {
-    if (!it || typeof it !== "object") continue
-    const token = String(it.file_token ?? "")
-    if (!token) continue
-    out.push({ token, name: String(it.name ?? ""), size: Number(it.size ?? 0) })
-  }
-  return out
-}
-
-export function attachmentKind(name) {
-  return IMAGE_EXTS.has(path.extname(String(name || "")).toLowerCase()) ? "image" : "other"
-}
-
-export function normalizeNonChatLabel(raw) {
-  const s = String(raw ?? "").trim()
-  return NON_CHAT_LABELS.includes(s) ? s : "未分类"
-}
-
-/** 飞书日期（ISO 带时区）→ YYYY-MM-DD（按 +08:00）。 */
-export function dateOnly(iso) {
-  const t = Date.parse(String(iso ?? ""))
-  if (Number.isNaN(t)) return ""
-  return new Date(t + 8 * 3600_000).toISOString().slice(0, 10)
-}
-
-/**
- * 飞书行 + 本地记录索引 → 导出用的记录对象。
- * columnNames 来自私有 feishu-table.json 的 key→name（D13，不在代码里写死列名）。
- */
-export function buildRecordView({ recordId, cells }, columns, columnNames, localIndex) {
-  const cell = (key) => {
-    const name = columnNames[key]
-    if (!name) return null
-    const i = columns.findIndex((c) => c.toLowerCase() === String(name).toLowerCase())
-    return i >= 0 ? cells[i] : null
-  }
-  const localId = cellText(cell("local_id")).trim()
-  const local = (localId && localIndex.byLocalId.get(localId)) || localIndex.byFeishuId.get(recordId) || null
-  return {
-    recordId,
-    title: cellText(cell("title")).trim(),
-    date: dateOnly(cell("date")),
-    customer: cellText(cell("customer")).trim(),
-    problem: cellText(cell("problem")).trim(),
-    solution: cellText(cell("solution")).trim(),
-    localId,
-    localTranscript: local?.chat || "",
-    localFile: local?.file ?? "",
-    attachments: attachmentList(cell("attachment")).map((a) => ({ ...a, kind: attachmentKind(a.name) })),
-  }
-}
-
-// ——— 本地知识库（只读） ————————————————————————————————
-
-/** 本地 records/*.md：local_id、feishu_record_id、原始聊天记录。 */
-export async function scanLocalRecords(kbDir) {
-  const out = []
-  const customersDir = path.join(kbDir, "customers")
-  if (!fs.existsSync(customersDir)) return out
-  for (const cust of await fsp.readdir(customersDir, { withFileTypes: true })) {
-    if (!cust.isDirectory()) continue
-    const dir = path.join(customersDir, cust.name, "records")
-    if (!fs.existsSync(dir)) continue
-    for (const name of await fsp.readdir(dir)) {
-      if (!name.endsWith(".md")) continue
-      const file = path.join(dir, name)
-      let fm
-      try {
-        fm = matter(await fsp.readFile(file, "utf8"))
-      } catch {
-        continue
-      }
-      const d = fm.data || {}
-      const m = String(fm.content ?? "").match(/##+\s*原始聊天记录[^\n]*\r?\n([\s\S]*)$/)
-      const chat = (m ? m[1] : "")
-        .trim()
-        .replace(/^`{3,}[^\n]*\n/, "")
-        .replace(/\n`{3,}\s*$/, "")
-        .trim()
-      out.push({
-        file,
-        localId: String(d.local_id ?? "").trim(),
-        feishuRecordId: String(d.feishu_record_id ?? "").trim(),
-        title: String(d.title ?? "").trim(),
-        date: String(d.date ?? "").slice(0, 10),
-        chat,
-      })
-    }
-  }
-  return out
-}
-
-export function indexLocalRecords(local) {
-  const byLocalId = new Map()
-  const byFeishuId = new Map()
-  for (const r of local) {
-    if (r.localId) byLocalId.set(r.localId, r)
-    if (r.feishuRecordId) byFeishuId.set(r.feishuRecordId, r)
-  }
-  return { byLocalId, byFeishuId }
-}
-
-async function loadColumnNames(cfg) {
-  const file = path.join(cfg.kbDir, "config", "feishu-table.json")
-  if (!fs.existsSync(file)) throw new Error("缺少 KB_DIR/config/feishu-table.json（列名映射）")
-  const json = JSON.parse(await fsp.readFile(file, "utf8"))
-  const map = {}
-  for (const col of json?.columns ?? []) {
-    if (col && col.key) map[col.key] = String(col.name ?? "")
-  }
-  return map
-}
-
-function attachColumnName(fields, columnNames) {
-  const fromType = fields.find((f) => f.type === "attachment")?.name
-  if (fromType) return fromType
-  const fromConfig = columnNames.attachment
-  if (fromConfig && fields.some((f) => f.name === fromConfig)) return fromConfig
-  throw new Error("正式表里没有附件字段（type=attachment）")
-}
-
-// ——— 价格与用量 ————————————————————————————————
-
-export async function readModelPrices(kbDir) {
-  const file = path.join(kbDir, "config", "model-prices.json")
-  if (!fs.existsSync(file)) return { ok: false, reason: "没有 config/model-prices.json" }
-  try {
-    const json = JSON.parse(await fsp.readFile(file, "utf8"))
-    return {
-      ok: true,
-      unit: json?.unit ?? "",
-      currency: json?.currency ?? "",
-      updatedAt: json?.updatedAt ?? "",
-      models: json?.models ?? {},
-    }
-  } catch {
-    return { ok: false, reason: "model-prices.json 解析失败" }
-  }
-}
-
-export function priceFor(prices, model) {
-  if (!prices?.ok) return null
-  const models = prices.models || {}
-  const keys = Object.keys(models)
-  const key = keys.find((k) => k === model) || keys.find((k) => model && (model.includes(k) || k.includes(model)))
-  if (!key) return null
-  const e = models[key]
-  const input = typeof e?.inputPerMillion === "number" ? e.inputPerMillion : null
-  const output = typeof e?.outputPerMillion === "number" ? e.outputPerMillion : null
-  return { key, input, output, priced: input != null && output != null }
-}
-
-export function estimateCost({ promptTokens, completionTokens, price }) {
-  if (!price?.priced) return null
-  return (promptTokens / 1_000_000) * price.input + (completionTokens / 1_000_000) * price.output
-}
-
-// ——— 转写（D19：逐图并行 + 同一条记录按顺序合并去重叠） ————————————————————————————————
-
-export function buildT25Prompt() {
-  return [
-    "这是微信或飞书的聊天截图。先判断整张图是不是聊天窗口（微信/飞书对话界面）：",
-    "- 是：is_chat=true，category 留空，按下面的规则逐字转写；",
-    "- 否：is_chat=false，category 填「报错」或「界面」或「效果图」之一，transcript 为空数组，不要硬转。",
-    '只输出 JSON：{"is_chat":true,"category":"","window_title":"截图顶部的聊天窗口标题，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。',
-    VL_TRANSCRIPT_RULE,
-    "只转写这一张截图，不要输出客户、问题描述等字段。",
-  ].join("")
-}
-
-export function mimeOf(buf) {
-  if (buf[0] === 0xff && buf[1] === 0xd8) return "image/jpeg"
-  if (buf[0] === 0x89 && buf[1] === 0x50) return "image/png"
-  if (buf[0] === 0x47 && buf[1] === 0x49) return "image/gif"
-  if (buf[0] === 0x52 && buf[1] === 0x49) return "image/webp"
-  return "image/jpeg"
-}
-
-/** 与 lib/vl.ts 相同的压缩参数（长边 2048、JPEG 82、1.5MB 软上限）。 */
-export async function compressForVl(input) {
-  try {
-    const img = sharp(input, { animated: false }).rotate()
-    const meta = await img.metadata()
-    const w = meta.width ?? 0
-    const h = meta.height ?? 0
-    let out = img
-    if (w > 2048 || h > 2048) {
-      out = out.resize({
-        width: w >= h ? 2048 : undefined,
-        height: h > w ? 2048 : undefined,
-        fit: "inside",
-        withoutEnlargement: true,
-      })
-    }
-    let buf = await out.jpeg({ quality: 82, mozjpeg: true }).toBuffer()
-    if (buf.length > 1_500_000) buf = await sharp(buf).jpeg({ quality: 62, mozjpeg: true }).toBuffer()
-    return buf
-  } catch {
-    return input
-  }
-}
-
-function vlError(status, body) {
-  if (status === 401 || status === 403) return "通义鉴权失败（DASHSCOPE_API_KEY）"
-  if (status === 429) return "通义限流（429）"
-  if (status === 400 && /unsafe|content|risk|敏感/i.test(body)) return "截图内容被安全策略拒绝"
-  return `通义接口返回 ${status}：${String(body).slice(0, 160)}`
-}
-
-async function postVl({ key, base, model, image }, timeoutMs = 300_000) {
-  const res = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      temperature: 0.2,
-      enable_thinking: false,
-      max_tokens: 32768,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image_url", image_url: { url: `data:${mimeOf(image)};base64,${image.toString("base64")}` } },
-            { type: "text", text: buildT25Prompt() },
-          ],
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
-  })
-  const text = await res.text()
-  if (!res.ok) throw new Error(vlError(res.status, text))
-  let json
-  try {
-    json = JSON.parse(text)
-  } catch {
-    throw new Error("通义返回不是 JSON")
-  }
-  const choice = json?.choices?.[0]
-  if (choice?.finish_reason === "length") throw new Error("输出被截断（这张图聊天太长）")
-  const content = String(choice?.message?.content ?? "")
-  const m = content.match(/\{[\s\S]*\}/)
-  if (!m) throw new Error("通义没有返回 JSON")
-  let obj
-  try {
-    obj = JSON.parse(m[0])
-  } catch {
-    throw new Error("通义返回的 JSON 解析失败")
-  }
-  const usage = json?.usage ?? {}
-  return {
-    obj,
-    usage: {
-      promptTokens: Number(usage.prompt_tokens ?? 0),
-      completionTokens: Number(usage.completion_tokens ?? 0),
-      imageTokens: Number(usage?.prompt_tokens_details?.image_tokens ?? 0),
-    },
-  }
-}
-
-/** 单张图：分类 + 转写（失败返回 ok:false，调用方记录）。 */
-export async function transcribeImageFile(file, cfg, { retries = 2 } = {}) {
-  const image = await compressForVl(await fsp.readFile(file))
-  let lastErr = null
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, 1500 * attempt))
-    const t0 = Date.now()
-    try {
-      const { obj, usage } = await postVl({ key: cfg.dashscopeKey, base: cfg.dashscopeBase, model: cfg.vlModel, image })
-      const isChat = obj?.is_chat === true || obj?.isChat === true
-      const windowTitle = cleanWindowTitle(typeof obj?.window_title === "string" ? obj.window_title : "")
-      const turns = dropTitleTurns(parseTranscript(obj?.transcript, { me: "我", contact: "客户" }), windowTitle)
-      return {
-        ok: true,
-        isChat,
-        category: isChat ? "" : normalizeNonChatLabel(obj?.category),
-        windowTitle,
-        turns: isChat ? turns : [],
-        usage,
-        ms: Date.now() - t0,
-        jpegBytes: image.length,
-        attempts: attempt + 1,
-      }
-    } catch (e) {
-      lastErr = e
-      const msg = String(e?.message ?? e)
-      if (/鉴权|安全策略|内容被/.test(msg)) break
-    }
-  }
-  return { ok: false, error: String(lastErr?.message ?? lastErr ?? "未知错误"), ms: 0 }
-}
-
-/** 固定并发池。 */
-export async function runPool(items, limit, worker) {
-  const n = Math.max(1, Math.min(Number(limit) || 1, items.length || 1))
-  let cursor = 0
-  const runners = Array.from({ length: n }, async () => {
-    for (;;) {
-      const i = cursor++
-      if (i >= items.length) return
-      await worker(items[i], i)
-    }
-  })
-  await Promise.all(runners)
 }
 
 // ——— 汇总 md（纯函数） ————————————————————————————————
@@ -736,13 +243,13 @@ export function countDistribution(records) {
 // ——— 命令：stats ————————————————————————————————
 
 async function cmdStats(cfg, args) {
-  const fieldList = await listFields(cfg)
-  const columnNames = await loadColumnNames(cfg)
+  const fieldList = await listFeishuFields(cfg)
+  const columnNames = await loadColumnNames(cfg.kbDir)
   for (const key of ["title", "date", "customer", "problem", "solution"]) {
     if (!columnNames[key]) throw new Error(`私有配置 feishu-table.json 缺少 key=${key}`)
   }
   columnNames.attachment = attachColumnName(fieldList, columnNames)
-  const { columns, records } = await listRecords(cfg)
+  const { columns, records } = await listFeishuRecords(cfg)
   const localIdName = columnNames.local_id || ""
   const localIdPresent = Boolean(localIdName) && columns.some((c) => c.toLowerCase() === localIdName.toLowerCase())
 
@@ -811,10 +318,10 @@ async function writeJsonAtomic(file, data) {
 }
 
 async function loadViews(cfg) {
-  const fieldList = await listFields(cfg)
-  const columnNames = await loadColumnNames(cfg)
+  const fieldList = await listFeishuFields(cfg)
+  const columnNames = await loadColumnNames(cfg.kbDir)
   columnNames.attachment = attachColumnName(fieldList, columnNames)
-  const { columns, records } = await listRecords(cfg)
+  const { columns, records } = await listFeishuRecords(cfg)
   const missing = ["title", "date", "customer", "problem", "solution"].filter(
     (k) => !columnNames[k] || !columns.some((c) => c.toLowerCase() === columnNames[k].toLowerCase()),
   )
