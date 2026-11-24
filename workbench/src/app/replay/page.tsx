@@ -2,17 +2,19 @@ import { PageHeader } from "@/components/bits"
 import { ReplayBoard, type ReplayRow } from "@/components/replay-board"
 import { ReplayRefresh } from "@/components/replay-refresh"
 import { resolveKbRoot } from "@/lib/feishu-schema-load"
-import { readReplayManifest, readReplayStatuses } from "@/lib/replay-store"
+import { readRunStates } from "@/lib/replay-results-store"
+import { readReplayManifest } from "@/lib/replay-store"
 
 export const dynamic = "force-dynamic"
 
 /**
  * T26 回放测试列表（D21）：只读 KB_DIR/replay/snapshot/，不连飞书。
  * 断网或 lark-cli 未登录时，已有快照照常打开。
+ * T27：状态由 replay/results/ 里最近一次核对过的运行决定（没点「完成核对」仍算未测）。
  */
 export default async function ReplayPage() {
   const kbDir = resolveKbRoot()
-  const [state, statuses] = await Promise.all([readReplayManifest(kbDir), readReplayStatuses(kbDir)])
+  const [state, runStates] = await Promise.all([readReplayManifest(kbDir), readRunStates(kbDir)])
 
   if (!state.ok) {
     return (
@@ -25,21 +27,25 @@ export default async function ReplayPage() {
   }
 
   const manifest = state.manifest
-  const rows: ReplayRow[] = (manifest?.records ?? []).map((r) => ({
-    r: r.r,
-    title: r.title,
-    customer: r.customer,
-    date: r.date,
-    screenshotCount: r.screenshotCount,
-    feishuEmpty: r.feishuEmpty,
-    status: statuses.get(r.recordId) ?? "untested",
-  }))
+  const rows: ReplayRow[] = (manifest?.records ?? []).map((r) => {
+    const runState = runStates.get(r.recordId)
+    return {
+      r: r.r,
+      title: r.title,
+      customer: r.customer,
+      date: r.date,
+      screenshotCount: r.screenshotCount,
+      feishuEmpty: r.feishuEmpty,
+      status: runState?.status ?? "untested",
+      pendingReview: runState?.pendingReview ?? false,
+    }
+  })
 
   return (
     <>
       <PageHeader
         title="回放测试"
-        description="从飞书正式表只读生成的快照。这个阶段只做列表：重新识别（T27）和模拟问答（T29）先占位。"
+        description="从飞书正式表只读生成的快照。点行尾「重新识别」进入对比界面；模拟问答（T29）先占位。"
       />
       <ReplayRefresh
         snapshotAt={manifest?.updatedAt ?? null}

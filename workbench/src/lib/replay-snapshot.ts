@@ -227,8 +227,11 @@ async function collect(cfg: ReplayConfig): Promise<{ plan: ReplayPlan; manifest:
 
     const needsDownload = images.some((i) => i.action === "fresh")
     if (needsDownload) downloadRecords++
+    // T27 要左右对比全部字段：老快照没有 fields，刷新一次时要重写明细（不下载、不转写）。
+    const missingFields = Boolean(existing) && !existing?.fields
     const changed =
       !existing ||
+      missingFields ||
       images.length !== existing.shots.length ||
       images.some((i) => i.action !== "reuse") ||
       view.attachments.length !== existing.attachments.length
@@ -421,6 +424,7 @@ export async function applyReplaySnapshot(
         solution: work.view.solution,
         attachments,
         shots,
+        fields: work.view.fields,
         numberSource: work.numberSource,
         importedAt: new Date().toISOString(),
       }
