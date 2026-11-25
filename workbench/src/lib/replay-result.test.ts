@@ -7,6 +7,7 @@ import {
   deriveRunState,
   estimateReorganizeCost,
   estimateTokens,
+  friendlyRunLabel,
   isBlankFieldReview,
   isReplayIssueType,
   isSafeRecordId,
@@ -18,6 +19,7 @@ import {
   replayFieldLabel,
   reviewHasIssue,
   runLabel,
+  runTooltip,
   sortRunsNewestFirst,
   splitMultiValue,
   type ReplayFieldReview,
@@ -248,10 +250,36 @@ describe("isSafeRecordId（拼路径前必须过）", () => {
     expect(label).toContain("已核对")
   })
 
+  it("下拉里的大白话：时间 + 模式 + 第几次", () => {
+    // 不写死时区：按本机时区算出期望值（CI 在 UTC，本机在 +08:00）。
+    const pad = (n: number) => String(n).padStart(2, "0")
+    const local = (iso: string) => {
+      const d = new Date(iso)
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    }
+    const r = run({ at: "2026-11-24T09:51:22.000Z", mode: "retranscribe" })
+    expect(friendlyRunLabel(r, 2)).toBe(`${local(r.at)} · 重新看图转写（第 2 次）`)
+    const reorg = run({ at: "2026-11-24T09:00:00.000Z", mode: "reorganize" })
+    expect(friendlyRunLabel(reorg, 1)).toBe(`${local(reorg.at)} · 只重跑整理（第 1 次）`)
+    // 形状固定：MM-DD HH:MM · 模式（第 N 次）
+    expect(friendlyRunLabel(r, 2)).toMatch(/^\d{2}-\d{2} \d{2}:\d{2} · 重新看图转写（第 2 次）$/)
+  })
+
+  it("悬停提示写模型、提示词版本、耗时、费用和核对状态", () => {
+    const tip = runTooltip(
+      run({ review: review({}), promptVersion: "fields-v1", transcriptPromptVersion: "transcript-v1", durationMs: 10_100, costYuan: 0.0038 }),
+    )
+    expect(tip).toContain("qwen-plus")
+    expect(tip).toContain("fields-v1 + transcript-v1")
+    expect(tip).toContain("10.1 秒")
+    expect(tip).toContain("0.0038 元")
+    expect(tip).toContain("已核对")
+  })
+
   it("从截图重新转写会同时显示两个提示词版本", () => {
-    const label = runLabel(run({ mode: "retranscribe", transcriptPromptVersion: "transcript-v2" }))
+    const label = runLabel(run({ mode: "retranscribe", transcriptPromptVersion: "transcript-v1" }))
     expect(label).toContain("从截图重新转写")
-    expect(label).toContain("transcript-v2")
+    expect(label).toContain("transcript-v1")
   })
 })
 

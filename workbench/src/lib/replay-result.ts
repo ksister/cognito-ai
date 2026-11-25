@@ -246,6 +246,35 @@ export function runLabel(run: Pick<ReplayRun, "at" | "mode" | "model" | "promptV
   return `${when} · ${REPLAY_MODE_LABEL[run.mode] ?? run.mode} · ${run.model} · ${prompts}${reviewed}`
 }
 
+/** 下拉里的大白话：`11-24 17:51 · 重新看图转写（第 2 次）`。ordinal 从 1 开始（最早的算第 1 次）。 */
+export function friendlyRunLabel(
+  run: Pick<ReplayRun, "at" | "mode">,
+  ordinal: number,
+  modeLabel?: string,
+): string {
+  const d = new Date(run.at)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  const when = Number.isNaN(d.getTime()) ? run.at : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const mode = run.mode === "retranscribe" ? "重新看图转写" : (modeLabel ?? REPLAY_MODE_LABEL[run.mode] ?? run.mode)
+  return `${when} · ${mode}（第 ${Math.max(1, ordinal)} 次）`
+}
+
+/** 悬停提示：模型、提示词版本、耗时、费用、核对状态。 */
+export function runTooltip(
+  run: Pick<ReplayRun, "model" | "promptVersion" | "transcriptPromptVersion" | "durationMs" | "costYuan" | "review" | "extractMode">,
+): string {
+  const prompts = [run.promptVersion, run.transcriptPromptVersion].filter(Boolean).join(" + ")
+  const parts = [
+    `模型 ${run.model || "未知"}`,
+    `提示词 ${prompts || "未知"}`,
+    run.extractMode === "rules" ? "规则提取（没配 AI key）" : "",
+    run.durationMs ? `${(run.durationMs / 1000).toFixed(1)} 秒` : "",
+    run.costYuan != null ? `约 ${run.costYuan.toFixed(4)} 元` : "",
+    run.review?.reviewedAt ? "已核对" : "未核对",
+  ].filter(Boolean)
+  return parts.join(" · ")
+}
+
 /** 运行 ID：20261124T090512-ab12（按时间可排序，同一条记录内唯一）。 */
 export function newRunId(at: Date = new Date(), suffix?: string): string {
   const iso = at.toISOString()

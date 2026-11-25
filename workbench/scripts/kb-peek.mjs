@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 // kb-peek：核对 KB_DIR（或任何目录）里的数据时**只准用它**（AGENTS.md 硬规则）。
 //
 // 用法：

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { isMyNickname, resolveAndFormat, resolveSpeakerTurns } from "./speaker-resolve"
+import { isGenericSpeaker, isMyNickname, isRealName, resolveAndFormat, resolveSpeakerTurns } from "./speaker-resolve"
 import type { TranscriptTurn } from "./types"
 
 const settings = { myNicknames: ["张三", "小张"], companyPrefixes: ["星图"] }
@@ -8,83 +8,91 @@ function t(over: Partial<TranscriptTurn>): TranscriptTurn {
   return { speaker: "", text: "", kind: "speech", ...over }
 }
 
-describe("isMyNickname", () => {
-  it("昵称命中（忽略我方公司前缀）", () => {
-    expect(isMyNickname("张三", settings)).toBe(true)
+describe("泛称不算昵称", () => {
+  it("「我」「客户」「对方」这些不算身份", () => {
+    for (const name of ["我", "客户", "对方", "本人", "自己", "  "]) {
+      expect(isGenericSpeaker(name)).toBe(true)
+      expect(isRealName(name, settings)).toBe(false)
+    }
+  })
+
+  it("泛称不会命中「我的昵称」，哪怕用户把「我」留在列表里", () => {
+    const withGeneric = { myNicknames: ["我", "张三"], companyPrefixes: [] }
+    expect(isMyNickname("我", withGeneric)).toBe(false)
+    expect(isMyNickname("张三", withGeneric)).toBe(true)
+  })
+
+  it("真名算身份（去掉公司前缀后比）", () => {
+    expect(isRealName("李四", settings)).toBe(true)
+    expect(isRealName("星图_李四", settings)).toBe(true)
     expect(isMyNickname("星图_张三", settings)).toBe(true)
-    expect(isMyNickname("星图 小张", settings)).toBe(true)
-  })
-
-  it("客户昵称不算我", () => {
-    expect(isMyNickname("李四", settings)).toBe(false)
-    expect(isMyNickname("", settings)).toBe(false)
-  })
-
-  it("前缀配置为空时只做原样比较", () => {
-    expect(isMyNickname("星图_张三", { myNicknames: ["张三"], companyPrefixes: [] })).toBe(false)
-    expect(isMyNickname("张三", { myNicknames: ["张三"], companyPrefixes: [] })).toBe(true)
   })
 })
 
-describe("resolveSpeakerTurns", () => {
-  it("右侧的气泡 = 我（截图没显示昵称也一样）", () => {
-    const { turns } = resolveSpeakerTurns([t({ text: "你好", side: "right" })], settings)
-    expect(turns[0].speaker).toBe("我")
-  })
-
-  it("左侧的气泡 = 客户，有昵称就保留昵称（R153/R154 要的效果）", () => {
+describe("resolveSpeakerTurns（气泡为主，昵称交叉核对）", () => {
+  it("右侧一律是我（没昵称、泛称、真名都一样）", () => {
     const { turns } = resolveSpeakerTurns(
-      [t({ text: "你好", side: "left" }), t({ text: "在吗", speaker: "李四", side: "left" })],
+      [
+        t({ text: "a", side: "right" }),
+        t({ text: "b", side: "right", speaker: "对方" }),
+        t({ text: "c", side: "right", speaker: "张三" }),
+      ],
       settings,
     )
-    expect(turns[0].speaker).toBe("客户")
-    expect(turns[1].speaker).toBe("李四")
+    expect(turns.map((x) => x.speaker)).toEqual(["我", "我", "我"])
   })
 
-  it("客户名字在左侧，不会被改成我（哪怕它在右边？不，右侧才是）", () => {
-    const { turns } = resolveSpeakerTurns([t({ text: "日志在哪", speaker: "李四", side: "left" })], settings)
-    expect(turns[0].speaker).toBe("李四")
+  it("左侧是客户：真名保留，泛称/空写「客户」", () => {
+    const { turns } = resolveSpeakerTurns(
+      [
+        t({ text: "a", side: "left" }),
+        t({ text: "b", side: "left", speaker: "客户" }),
+        t({ text: "c", side: "left", speaker: "李四" }),
+      ],
+      settings,
+    )
+    expect(turns.map((x) => x.speaker)).toEqual(["客户", "客户", "李四"])
   })
 
-  it("昵称命中「我的昵称」时，即使在左侧也算我（截图昵称是可靠信号）", () => {
-    const { turns } = resolveSpeakerTurns([t({ text: "我发的", speaker: "张三", side: "left" })], settings)
-    expect(turns[0].speaker).toBe("我")
+  it("昵称像我方但气泡在左：保持原样并标 uncertain", () => {
+    const out = resolveSpeakerTurns([t({ text: "a", side: "left", speaker: "星图_张三" })], settings)
+    expect(out.turns[0].speaker).toBe("星图_张三")
+    expect(out.uncertain.join("")).toContain("气泡在左侧")
   })
 
-  it("右侧但昵称不在配置里：仍算我，并提示去设置页核对", () => {
-    const out = resolveSpeakerTurns([t({ text: "a", speaker: "王五", side: "right" })], settings)
-    expect(out.turns[0].speaker).toBe("我")
-    expect(out.uncertain.join("")).toContain("不在设置页的「我的昵称」里")
+  it("昵称不是我方但气泡在右：保持原样并标 uncertain", () => {
+    const out = resolveSpeakerTurns([t({ text: "a", side: "right", speaker: "李四" })], settings)
+    expect(out.turns[0].speaker).toBe("李四")
+    expect(out.uncertain.join("")).toContain("气泡在右侧")
   })
 
-  it("没有气泡位置也没有昵称：标未知并写 uncertain", () => {
-    const out = resolveSpeakerTurns([t({ text: "a" })], settings)
-    expect(out.turns[0].speaker).toBe("未知")
+  it("没有侧别时才只看真名昵称：命中我的是我，别人保留昵称", () => {
+    const out = resolveSpeakerTurns([t({ text: "a", speaker: "张三" }), t({ text: "b", speaker: "李四" })], settings)
+    expect(out.turns.map((x) => x.speaker)).toEqual(["我", "李四"])
+    expect(out.uncertain.join("")).toContain("读不出气泡左右")
+  })
+
+  it("没有侧别、没有昵称、只有泛称：标未知", () => {
+    const out = resolveSpeakerTurns([t({ text: "a" }), t({ text: "b", speaker: "对方" })], settings)
+    expect(out.turns.map((x) => x.speaker)).toEqual(["未知", "未知"])
     expect(out.uncertain.join("")).toContain("未知")
   })
 
-  it("没有气泡位置但有昵称：保留昵称", () => {
-    const { turns } = resolveSpeakerTurns([t({ text: "a", speaker: "李四" })], settings)
-    expect(turns[0].speaker).toBe("李四")
+  it("用户把「我」从昵称列表删掉后，右侧照样是我（不靠列表）", () => {
+    const noMine = { myNicknames: [], companyPrefixes: [] }
+    const out = resolveSpeakerTurns([t({ text: "a", side: "right" }), t({ text: "b", side: "left", speaker: "李四" })], noMine)
+    expect(out.turns.map((x) => x.speaker)).toEqual(["我", "李四"])
+    expect(out.uncertain).toEqual([])
   })
 
-  it("时间分隔行不参与判断，原样保留", () => {
+  it("时间分隔行不参与判断", () => {
     const turn = t({ text: "—— 10月28日 09:12 ——", kind: "time" })
-    const { turns } = resolveSpeakerTurns([turn], settings)
-    expect(turns[0]).toEqual(turn)
+    expect(resolveSpeakerTurns([turn], settings).turns[0]).toEqual(turn)
   })
 
   it("只改发言人，不改文字", () => {
     const { turns } = resolveSpeakerTurns([t({ text: "型号 ABC-1 报错", side: "left", speaker: "李四" })], settings)
     expect(turns[0].text).toBe("型号 ABC-1 报错")
-  })
-
-  it("没有昵称配置时也能按侧边跑", () => {
-    const { turns } = resolveSpeakerTurns(
-      [t({ text: "a", side: "right" }), t({ text: "b", side: "left" })],
-      { myNicknames: [], companyPrefixes: [] },
-    )
-    expect(turns.map((x) => x.speaker)).toEqual(["我", "客户"])
   })
 })
 

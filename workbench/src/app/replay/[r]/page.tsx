@@ -32,6 +32,12 @@ export default async function ReplayRecordPage({ params }: { params: Promise<{ r
     : [...new Set([...Object.keys(left), ...runs.flatMap((run) => Object.keys(run.fields))])]
 
   const state = deriveRunState(runs)
+  const shots = detail.shots.map((shot, index) => ({
+    index,
+    url: `/api/replay/media/${encodeURIComponent(detail.r)}/${index}`,
+    isChat: shot.isChat !== false,
+    category: shot.category ?? "",
+  }))
 
   return (
     <>
@@ -41,7 +47,7 @@ export default async function ReplayRecordPage({ params }: { params: Promise<{ r
       </Link>
       <PageHeader
         title={`${detail.r} · ${detail.title || "（无问题名称）"}`}
-        description="左边是飞书原记录（快照），右边是重新识别的结果。只改本地的结果文件，不会写飞书、也不会动原记录。"
+        description="左边是截图和转写，右边是飞书原记录与本次结果的对比。只改本地的结果文件，不会写飞书、也不会动原记录。"
       />
       <ReplayCompare
         record={{
@@ -57,6 +63,7 @@ export default async function ReplayRecordPage({ params }: { params: Promise<{ r
         left={left}
         runs={runs}
         state={state}
+        shots={shots}
       />
     </>
   )
