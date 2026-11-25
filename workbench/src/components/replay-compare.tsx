@@ -9,6 +9,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { statusLabel, type ReplayStatus } from "@/lib/replay-model"
+import { ME } from "@/lib/speaker-resolve"
+import {
+  alignTranscripts,
+  countSpeakerDiffs,
+  type AlignTurn,
+  type AlignedRow,
+} from "@/lib/transcript-align"
 import {
   REPLAY_ISSUE_LABEL,
   REPLAY_ISSUE_TYPES,
@@ -117,6 +124,35 @@ function timeText(iso: string | null | undefined): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+type LineRow = { speaker: string; text: string; kind: "speech" | "time" }
+
+const SPEAKER_LINE = /^([^：:]{1,40})[：:](.*)$/
+
+/** 把格式化后的转写拆成行（[OCR 标记] 跳过；—— 时间 —— 单独一行）。 */
+function parseTranscriptLines(transcript: string): LineRow[] {
+  const out: LineRow[] = []
+  for (const raw of String(transcript ?? "").split("\n")) {
+    const line = raw.trim()
+    if (!line || line.startsWith("[OCR")) continue
+    if (/^——.*——$/.test(line)) {
+      out.push({ speaker: "", text: line, kind: "time" })
+      continue
+    }
+    const m = line.match(SPEAKER_LINE)
+    if (m) out.push({ speaker: m[1].trim(), text: m[2].trim(), kind: "speech" })
+    else out.push({ speaker: "", text: line, kind: "speech" })
+  }
+  return out
+}
+
+/** 对齐用的行：优先用结果里存的 turns（带 side / rawSpeaker），老结果退化成解析文本。 */
+function turnsOfRun(run: ReplayRun): AlignTurn[] {
+  if (run.turns?.length) {
+    return run.turns.map((t) => ({ speaker: t.speaker, text: t.text, kind: t.kind === "time" ? "time" : "speech", side: t.side }))
+  }
+  return parseTranscriptLines(run.transcript)
+}
+
 export function ReplayCompare({
   record,
   keys,
@@ -146,6 +182,12 @@ export function ReplayCompare({
   const [showSame, setShowSame] = useState(false)
   const [pane, setPane] = useState<"shots" | "transcript">(shots.length ? "shots" : "transcript")
   const [zoom, setZoom] = useState<ReplayCompareShot | null>(null)
+  const [onlyMe, setOnlyMe] = useState(false)
+  const [compareRunId, setCompareRunId] = useState("")
+  const [speakerError, setSpeakerError] = useState(() => Boolean(runs[0]?.review?.speakerError))
+  const [speakerErrCount, setSpeakerErrCount] = useState(() =>
+    runs[0]?.review?.speakerErrorCount ? String(runs[0].review.speakerErrorCount) : "",
+  )
 
   // 刷新页面后如果多了新结果（刚跑完），自动切到最新那次。
   const knownRuns = useRef<Set<string>>(new Set(runs.map((r) => r.runId)))
@@ -176,12 +218,22 @@ export function ReplayCompare({
   const sameRows = diffs.filter((d) => d.same)
   const transcriptLines = selected ? selected.transcript.split("\n").filter(Boolean).length : 0
 
+  const transcriptLineRows = useMemo(() => parseTranscriptLines(selected?.transcript ?? ""), [selected])
+  const compareRun = useMemo(() => runs.find((r) => r.runId === compareRunId) ?? null, [runs, compareRunId])
+  const compareRows: AlignedRow[] = useMemo(
+    () => (selected && compareRun ? alignTranscripts(turnsOfRun(selected), turnsOfRun(compareRun)) : []),
+    [selected, compareRun],
+  )
+
   function pickRun(runId: string) {
     const run = runs.find((r) => r.runId === runId) ?? null
     const nextEdits = editsFromRun(run)
     setSelectedId(runId)
     setEdits(nextEdits)
     setLastSaved(JSON.stringify(nextEdits))
+    setSpeakerError(Boolean(run?.review?.speakerError))
+    setSpeakerErrCount(run?.review?.speakerErrorCount ? String(run.review.speakerErrorCount) : "")
+    setCompareRunId((cur) => (cur === runId ? "" : cur))
     setSavedAt(null)
     setError(null)
   }
@@ -195,10 +247,18 @@ export function ReplayCompare({
     setSaving(true)
     setError(null)
     try {
+      const count = Number.parseInt(speakerErrCount, 10)
       const res = await fetch("/api/replay/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recordId: record.recordId, runId: selected.runId, fields, reviewed }),
+        body: JSON.stringify({
+          recordId: record.recordId,
+          runId: selected.runId,
+          fields,
+          reviewed,
+          speakerError,
+          speakerErrorCount: Number.isFinite(count) && count > 0 ? count : 0,
+        }),
       })
       const data = (await res.json()) as { ok?: boolean; error?: string }
       if (!res.ok || !data.ok) {
@@ -372,10 +432,13 @@ export function ReplayCompare({
           )}
         >
           <Card className="py-0">
-            <div className="flex items-center justify-between border-b px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 text-xs">
               <span className="inline-flex items-center gap-1 font-medium">
                 <FileText className="size-3.5" />
                 转写{selected ? ` · ${transcriptLines} 行` : ""}
+                {compareRows.length > 0 && (
+                  <span className="ml-1 text-amber-700">· 发言人不同 {countSpeakerDiffs(compareRows)} 行</span>
+                )}
               </span>
               <span className="text-muted-foreground replay-toggle">
                 <button type="button" onClick={() => setPane("shots")} className="hover:text-foreground">
@@ -383,11 +446,96 @@ export function ReplayCompare({
                 </button>
               </span>
             </div>
+
+            <div className="space-y-1.5 border-b px-2 py-2 text-[11px]">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={onlyMe}
+                    onChange={(e) => setOnlyMe(e.target.checked)}
+                    className="size-3.5"
+                  />
+                  只看「我」
+                </label>
+                <label className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  对比另一次运行
+                  <select
+                    value={compareRunId}
+                    onChange={(e) => setCompareRunId(e.target.value)}
+                    className="h-7 max-w-[12rem] rounded-md border bg-background px-1.5 text-[11px] text-foreground"
+                  >
+                    <option value="">不对比</option>
+                    {runs
+                      .filter((r) => r.runId !== selected?.runId)
+                      .map((run, i) => (
+                        <option key={run.runId} value={run.runId}>
+                          {friendlyRunLabel(run, runs.length - i)}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+              </div>
+              {compareRunId && compareRows.length > 0 && (
+                <p className="text-muted-foreground">黄色 = 同一句话、两版发言人不同；灰色 = 另一版没有这一行。</p>
+              )}
+            </div>
+
             <div className="p-2">
               {selected ? (
-                <pre className="max-h-[calc(100vh-8rem)] overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {selected.transcript}
-                </pre>
+                <div className="max-h-[calc(100vh-10rem)] overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
+                  {compareRunId ? (
+                    compareRows.map((row, i) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          "flex gap-1 rounded px-1",
+                          row.speakerDiff && "bg-amber-100",
+                          !row.speakerDiff && !row.right && "text-muted-foreground",
+                          onlyMe && row.left && row.left.speaker !== ME && "opacity-40",
+                        )}
+                      >
+                        <span className="shrink-0">
+                          {row.left ? (
+                            row.left.kind === "time" ? null : (
+                              <span className="font-semibold">{row.left.speaker || "未知"}：</span>
+                            )
+                          ) : (
+                            <span className="text-zinc-400">（另一版多一行）</span>
+                          )}
+                        </span>
+                        <span className="min-w-0 break-words whitespace-pre-wrap">
+                          {row.left?.text ?? ""}
+                          {row.speakerDiff && row.right && (
+                            <span className="ml-1 rounded bg-amber-200 px-1 text-[10px] text-amber-900">
+                              另一版：{row.right.speaker || "未知"}
+                            </span>
+                          )}
+                          {!row.right && <span className="ml-1 rounded bg-zinc-200 px-1 text-[10px]">另一版没有</span>}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    transcriptLineRows.map((line, i) => (
+                      <div
+                        key={i}
+                        className={cn(
+                          "rounded px-1 whitespace-pre-wrap break-words",
+                          onlyMe && line.speaker !== ME && "opacity-40",
+                        )}
+                      >
+                        {line.kind === "time" ? (
+                          line.text
+                        ) : (
+                          <>
+                            <span className="font-semibold">{line.speaker || "未知"}：</span>
+                            {line.text}
+                          </>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
               ) : (
                 <p className="px-2 py-6 text-center text-xs text-muted-foreground">跑过一次之后，这里显示这次用的转写。</p>
               )}
@@ -475,6 +623,56 @@ export function ReplayCompare({
                 </button>
                 {reviewedAt && <span className="text-xs text-muted-foreground">已核对 {timeText(reviewedAt)}</span>}
                 {savingHint && <span className="text-xs text-muted-foreground">{savingHint}</span>}
+              </div>
+
+              {/* 记录级核对：发言人（谁说的）对不对 */}
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-2.5 py-1.5 text-xs">
+                <label className="inline-flex items-center gap-1.5 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={speakerError}
+                    onChange={(e) => {
+                      setSpeakerError(e.target.checked)
+                      const count = Number.parseInt(speakerErrCount, 10)
+                      const nextFields = edits
+                      setEdits(nextFields)
+                      void fetch("/api/replay/review", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          recordId: record.recordId,
+                          runId: selected?.runId,
+                          fields: nextFields,
+                          reviewed: false,
+                          speakerError: e.target.checked,
+                          speakerErrorCount: Number.isFinite(count) && count > 0 ? count : 0,
+                        }),
+                      })
+                    }}
+                    className="size-3.5"
+                  />
+                  发言人有误
+                </label>
+                <label className="inline-flex items-center gap-1 text-muted-foreground">
+                  错了几条
+                  <input
+                    type="number"
+                    min={0}
+                    max={9999}
+                    value={speakerErrCount}
+                    onChange={(e) => setSpeakerErrCount(e.target.value)}
+                    onBlur={() => void save(false)}
+                    placeholder="0"
+                    className="h-6 w-16 rounded-md border bg-background px-1.5 text-right text-xs"
+                  />
+                </label>
+                {speakerError && (
+                  <span className="text-amber-700">
+                    这条记录会算「有问题」
+                    {Number.parseInt(speakerErrCount, 10) > 0 ? `，错 ${Number.parseInt(speakerErrCount, 10)} 条` : ""}
+                  </span>
+                )}
+                <span className="text-muted-foreground">勾上并填条数后点「完成核对」保存</span>
               </div>
 
               {!record.fieldsComplete && (

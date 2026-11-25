@@ -73,7 +73,6 @@ export type ResolvedTranscript = {
 /** 按「气泡左右为主、昵称交叉核对」定发言人。 */
 export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSettings): ResolvedTranscript {
   const resolved: TranscriptTurn[] = []
-  let mineButLeft = 0
   let otherButRight = 0
   let noSideMine = 0
   let colleague = 0
@@ -88,27 +87,29 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
     const mine = isMyNickname(speaker, settings)
     const real = isRealName(speaker, settings)
 
-    // ③ 交叉核对：昵称和气泡位置对不上时，保留截图上的原样。
-    if (turn.side === "left" && mine) {
-      mineButLeft++
-      resolved.push({ ...turn, speaker: speaker || ME })
+    // ① 截图上的真名命中「我的昵称」→ 我，不管气泡在哪一侧
+    //    （飞书/钉钉有「全部靠左」的布局，我自己的深蓝气泡也在左边）。
+    if (mine) {
+      if (!turn.side) noSideMine++
+      resolved.push({ ...turn, speaker: ME })
       continue
     }
 
-    // 我方同事：名字带公司前缀、但不是我本人；不管气泡在哪边都算我方。
+    // ② 名字带我方公司前缀、不是我本人 → 我方同事。
     if (isCompanyColleague(speaker, settings)) {
       colleague++
       resolved.push({ ...turn, speaker: COLLEAGUE })
       continue
     }
 
-    if (turn.side === "right" && real && !mine) {
+    // ④ 名字不是我、却在右侧：保留原名并记 uncertain（不硬算成客户）。
+    if (turn.side === "right" && real) {
       otherButRight++
       resolved.push({ ...turn, speaker })
       continue
     }
 
-    // ①② 以气泡为准；泛称和空名字不当作身份。
+    // ③ 其余按气泡：右侧是我（没名字/泛称），左侧有真名保留真名、否则客户方。
     if (turn.side === "right") {
       resolved.push({ ...turn, speaker: ME })
       continue
@@ -118,12 +119,7 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
       continue
     }
 
-    // ④ 没有侧别：只看真名昵称。
-    if (mine) {
-      noSideMine++
-      resolved.push({ ...turn, speaker: ME })
-      continue
-    }
+    // ⑤ 没有侧别：有真名就保留，什么都没有标「未知」。
     if (real) {
       resolved.push({ ...turn, speaker })
       continue
@@ -133,9 +129,6 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
   }
 
   const uncertain: string[] = []
-  if (mineButLeft) {
-    uncertain.push(`有 ${mineButLeft} 条消息的昵称在「我的昵称」里，但气泡在左侧；已保留截图上的昵称，请核对`)
-  }
   if (otherButRight) {
     uncertain.push(`有 ${otherButRight} 条消息的昵称不在「我的昵称」里，但气泡在右侧；已保留截图上的昵称，请核对`)
   }
