@@ -30,6 +30,23 @@ export const VL_TRANSCRIPT_RULE = `${TRANSCRIPT_STYLE_RULE}${TRANSCRIPT_SPEAKER_
 /** 回放「从截图重新转写」用的 v2 规则（第一批 20 条比对后由技术总监决定是否切换）。 */
 export const VL_TRANSCRIPT_RULE_V2 = `${TRANSCRIPT_STYLE_RULE}${TRANSCRIPT_SPEAKER_RULE_V2}${TRANSCRIPT_FORMAT_RULE}`
 
+/**
+ * v3 = v1 原文一字不改，只在「怎么判断谁是右侧」那句后面插入「怎么判断 side」的规则（11-25 用户定）。
+ * 起因：R153 是钉钉截图，客户连发的消息只有第一条带头像、后面缩进，模型按「离边的距离」判成了右侧。
+ * 规则：① 看头像在哪边；② 看气泡颜色；③ 连续没有头像的消息算上一个发送者的。
+ *
+ * 注意插入位置：必须紧跟在 v1 的「按气泡位置判断」那句后面。第一版把规则追加在整段末尾，
+ * 模型仍然按前面那句「按气泡位置判断」把缩进的消息判成右侧（R153 三次里两次右侧 2 条）。
+ */
+export const TRANSCRIPT_SIDE_RULE_V3 =
+  "判断 side 时按这三条，不要按气泡离屏幕边缘的距离、也不要把往内缩进当成右侧：" +
+  "① 看头像是谁的：头像在哪一边就属于哪一边（钉钉、飞书里同一个人连发的消息，只有第一条带头像，后面几条往里缩进，缩进不代表换人）。" +
+  "② 看气泡颜色：自己发的消息是彩色气泡（钉钉、飞书是蓝色，微信是绿色），对方是白色或灰色。" +
+  "③ 连续几条没有头像的消息，算上一个发送者的，除非气泡颜色变了。"
+
+/** 回放「从截图重新转写」用的 v3 规则 = v1 + 紧跟其后的侧别规则（v1 每一句都没改）。 */
+export const VL_TRANSCRIPT_RULE_V3 = `${TRANSCRIPT_STYLE_RULE}${TRANSCRIPT_SPEAKER_RULE_V1}${TRANSCRIPT_SIDE_RULE_V3}${TRANSCRIPT_FORMAT_RULE}`
+
 export const VL_TRANSCRIPT_SCHEMA =
   '"transcript": [{"speaker": "昵称；无昵称时右侧写我、左侧写客户", "side": "left|right|空", "kind": "speech|time", "text": "原文，或 —— 10月28日 09:12 ——，或 [图片] / [文件] 文件名 / [语音]"}]'
 

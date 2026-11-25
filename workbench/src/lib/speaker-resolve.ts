@@ -22,6 +22,7 @@ export type SpeakerSettings = {
 
 export const ME = "我"
 export const CUSTOMER = "客户"
+export const COLLEAGUE = "我方同事"
 export const UNKNOWN = "未知"
 
 /** 泛称：不能拿来判断「这个人是谁」。 */
@@ -48,6 +49,21 @@ export function isRealName(speaker: string, settings: SpeakerSettings): boolean 
   return Boolean(name) && !isGenericSpeaker(name)
 }
 
+/**
+ * 名字上带我方公司前缀、但不在「我的昵称」里 = 我方同事。
+ * 依据：用户截图里同事都在左侧、显示为「公司前缀 + 名字」；不能把它算成客户方
+ * （否则同事给的解决方法会被当成客户说的）。
+ */
+export function isCompanyColleague(speaker: string, settings: SpeakerSettings): boolean {
+  const raw = normalizeSpeakerName(String(speaker ?? ""), [])
+  if (!raw || isGenericSpeaker(raw)) return false
+  const stripped = normalizeSpeakerName(raw, settings.companyPrefixes)
+  if (!stripped || stripped === raw) return false // 没有可识别的前缀
+  if (isGenericSpeaker(stripped)) return false // 「公司前缀 + 客户」这种泛称
+  if (isMyNickname(raw, settings)) return false // 是我自己
+  return true
+}
+
 export type ResolvedTranscript = {
   turns: TranscriptTurn[]
   /** 不能确定的地方（只报数量，不带名字）。 */
@@ -60,6 +76,7 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
   let mineButLeft = 0
   let otherButRight = 0
   let noSideMine = 0
+  let colleague = 0
   let unknown = 0
 
   for (const turn of turns) {
@@ -77,6 +94,14 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
       resolved.push({ ...turn, speaker: speaker || ME })
       continue
     }
+
+    // 我方同事：名字带公司前缀、但不是我本人；不管气泡在哪边都算我方。
+    if (isCompanyColleague(speaker, settings)) {
+      colleague++
+      resolved.push({ ...turn, speaker: COLLEAGUE })
+      continue
+    }
+
     if (turn.side === "right" && real && !mine) {
       otherButRight++
       resolved.push({ ...turn, speaker })
@@ -113,6 +138,9 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
   }
   if (otherButRight) {
     uncertain.push(`有 ${otherButRight} 条消息的昵称不在「我的昵称」里，但气泡在右侧；已保留截图上的昵称，请核对`)
+  }
+  if (colleague) {
+    uncertain.push(`有 ${colleague} 条消息的昵称带我方公司前缀、不在「我的昵称」里，已记为「${COLLEAGUE}」`)
   }
   if (noSideMine) {
     uncertain.push(`有 ${noSideMine} 条消息读不出气泡左右，是按昵称认成「我」的`)

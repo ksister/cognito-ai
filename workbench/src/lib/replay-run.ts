@@ -13,7 +13,26 @@ import { estimateCost, priceFor, readModelPrices, type ModelPrice, type ModelPri
 import { averageUsage, type TokenAverage } from "./replay-model"
 import { loadCompanyPrefixes, loadSpeakersSettings } from "./speakers-config"
 import { resolveAndFormat } from "./speaker-resolve"
-import { buildSnapshotTranscriptPrompt, transcribeImageFile, TRANSCRIPT_PROMPT_VERSION_V1 } from "./vl-transcribe"
+import {
+  buildSnapshotTranscriptPrompt,
+  buildTranscriptPromptV3,
+  transcribeImageFile,
+  TRANSCRIPT_PROMPT_VERSION_V1,
+  TRANSCRIPT_PROMPT_VERSION_V3,
+} from "./vl-transcribe"
+
+/** 回放可选的转写提示词版本：v3（默认，v1 + 侧别规则）/ v1（对照用）。 */
+export type ReplayTranscriptVersion = "transcript-v1" | "transcript-v3"
+
+export function parseReplayTranscriptVersion(v: unknown): ReplayTranscriptVersion | null {
+  if (v == null || v === "" || v === "v3" || v === TRANSCRIPT_PROMPT_VERSION_V3) return TRANSCRIPT_PROMPT_VERSION_V3
+  if (v === "v1" || v === TRANSCRIPT_PROMPT_VERSION_V1) return TRANSCRIPT_PROMPT_VERSION_V1
+  return null
+}
+
+function promptFor(version: ReplayTranscriptVersion): string {
+  return version === TRANSCRIPT_PROMPT_VERSION_V1 ? buildSnapshotTranscriptPrompt() : buildTranscriptPromptV3()
+}
 import { runPool } from "./concurrency"
 import {
   estimateReorganizeCost,
@@ -328,11 +347,13 @@ export async function previewRetranscribe({
   detail,
   previousRuns = 0,
   vlModel,
+  transcriptVersion = TRANSCRIPT_PROMPT_VERSION_V3,
 }: {
   kbDir: string
   detail: ReplayRecordDetail
   previousRuns?: number
   vlModel: string
+  transcriptVersion?: ReplayTranscriptVersion
 }): Promise<RetranscribePreview> {
   const schema = await schemaOrThrow()
   const settingsState = await loadSpeakersSettings(kbDir)
@@ -371,7 +392,7 @@ export async function previewRetranscribe({
     vlModel,
     model: aiModelName(),
     promptVersion: FIELDS_PROMPT_VERSION,
-    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V1,
+    transcriptPromptVersion: transcriptVersion,
     shots: chatShots.length,
     skipped: detail.shots.length - chatShots.length,
     missingMedia,
@@ -392,11 +413,11 @@ export async function previewRetranscribe({
 
 /**
  * 执行「从截图重新转写」：
- *  1. 用 v1 提示词把快照里的聊天截图重新转写（每张一次 VL 调用，按顺序拼接去重叠）。
- *     v1 就是主流程那一版：3 次实验逐字一致；v2 会把飞书的自动翻译小字拆成消息，已弃用。
+ *  1. 用转写提示词把快照里的聊天截图重新转写（每张一次 VL 调用，按顺序拼接去重叠）。
+ *     默认 v3 = v1 原文 + 三条判断侧别的规则；对照实验可传 transcript-v1。
  *  2. 用气泡左右定发言人、昵称交叉核对（`resolveSpeakerTurns`）。
  *  3. 用同一套字段提示词出字段；日期和客户从快照补（这两列本来靠上下文）。
- *  4. 结果写 replay/results/，记 transcriptPromptVersion=transcript-v1。
+ *  4. 结果写 replay/results/，`transcriptPromptVersion` 记实际用的版本。
  *
  * 只读快照，不写 snapshot/transcripts/（那是快照自己的证据），也不写飞书。
  */
@@ -409,6 +430,7 @@ export async function runRetranscribe({
   at = new Date(),
   runId,
   concurrency = 4,
+  transcriptVersion = TRANSCRIPT_PROMPT_VERSION_V3,
 }: {
   kbDir: string
   detail: ReplayRecordDetail
@@ -418,12 +440,13 @@ export async function runRetranscribe({
   at?: Date
   runId?: string
   concurrency?: number
+  transcriptVersion?: ReplayTranscriptVersion
 }): Promise<ReplayRun> {
   const schema = await schemaOrThrow()
   if (!dashscopeKey || !vlModel) throw new Error("缺少 DASHSCOPE_API_KEY / DASHSCOPE_VL_MODEL，无法重新转写截图")
   const settingsState = await loadSpeakersSettings(kbDir)
   const settings = settingsState.ok ? settingsState.settings : { myNicknames: [], companyPrefixes: [] }
-  const prompt = buildSnapshotTranscriptPrompt()
+  const prompt = promptFor(transcriptVersion)
 
   const chatShots = detail.shots.filter((s) => s.isChat !== false)
   if (!chatShots.length) throw new Error("这条记录没有聊天截图，无法从截图重新转写")
@@ -496,13 +519,14 @@ export async function runRetranscribe({
     durationMs,
     model: aiModelName(),
     promptVersion: FIELDS_PROMPT_VERSION,
-    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V1,
+    transcriptPromptVersion: transcriptVersion,
     extractMode: fieldsResult.mode,
     usage: { promptTokens: vlPromptTokens + (fieldUsage?.promptTokens ?? 0), completionTokens: vlCompletionTokens + (fieldUsage?.completionTokens ?? 0) },
     costYuan,
     transcript: chat,
-    turns: resolvedTurns.map((t) => ({
+    turns: resolvedTurns.map((t, i) => ({
       speaker: t.speaker,
+      rawSpeaker: mergedTurns[i]?.speaker ?? "",
       text: t.text,
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),

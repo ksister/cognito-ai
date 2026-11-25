@@ -3,6 +3,7 @@ import sharp from "sharp"
 import {
   VL_TRANSCRIPT_RULE,
   VL_TRANSCRIPT_RULE_V2,
+  VL_TRANSCRIPT_RULE_V3,
   cleanWindowTitle,
   dropTitleTurns,
   parseTranscript,
@@ -13,10 +14,10 @@ import type { TranscriptTurn } from "./types"
  * 单张截图的通义 VL 转写（D19：一图一次调用，只做转写和「是不是聊天截图」）。
  * 从 T25 导出脚本里抽出来，T25 与 T26 回放快照共用这一份。
  *
- * T27 起有两种提示词：
+ * 提示词版本：
  *  - v1（`buildSnapshotTranscriptPrompt`）：主流程、T25、T26 快照用，保持不变；
- *  - v2（`buildTranscriptPromptV2`）：只在回放「从截图重新转写」里用，要求每条消息带
- *    气泡左右和截图上显示的昵称原文，发言人由 `speaker-resolve.ts` 的确定性规则决定。
+ *  - v2（`buildTranscriptPromptV2`）：曾经的回放版本，会把自动翻译小字拆成消息，已弃用；
+ *  - v3（`buildTranscriptPromptV3`）：回放用 = v1 原文 + 三条判断侧别的规则（看头像、看气泡颜色、连续消息归属）。
  *
  * Script-safe: no `server-only`, `.ts` suffix on relative runtime imports.
  */
@@ -24,6 +25,7 @@ import type { TranscriptTurn } from "./types"
 /** 提示词版本写进每次回放结果，比较两批结果时要能看出来用的是哪一版。 */
 export const TRANSCRIPT_PROMPT_VERSION_V1 = "transcript-v1"
 export const TRANSCRIPT_PROMPT_VERSION_V2 = "transcript-v2"
+export const TRANSCRIPT_PROMPT_VERSION_V3 = "transcript-v3"
 
 export const NON_CHAT_LABELS = ["报错", "界面", "效果图"] as const
 
@@ -48,15 +50,24 @@ export function normalizeNonChatLabel(raw: unknown): string {
   return (NON_CHAT_LABELS as readonly string[]).includes(s) ? s : "未分类"
 }
 
-export function buildSnapshotTranscriptPrompt(): string {
+function chatPrompt(rule: string): string {
   return [
     "这是微信或飞书的聊天截图。先判断整张图是不是聊天窗口（微信/飞书对话界面）：",
     "- 是：is_chat=true，category 留空，按下面的规则逐字转写；",
     "- 否：is_chat=false，category 填「报错」或「界面」或「效果图」之一，transcript 为空数组，不要硬转。",
     '只输出 JSON：{"is_chat":true,"category":"","window_title":"截图顶部的聊天窗口标题，看不清就留空","transcript":[{"speaker":"昵称","side":"left|right","kind":"speech|time","text":"原文"}]}。',
-    VL_TRANSCRIPT_RULE,
+    rule,
     "只转写这一张截图，不要输出客户、问题描述等字段。",
   ].join("")
+}
+
+export function buildSnapshotTranscriptPrompt(): string {
+  return chatPrompt(VL_TRANSCRIPT_RULE)
+}
+
+/** v3 转写提示词（回放用）：v1 原文 + 三条判断侧别的规则，其余一个字不改。 */
+export function buildTranscriptPromptV3(): string {
+  return chatPrompt(VL_TRANSCRIPT_RULE_V3)
 }
 
 /**

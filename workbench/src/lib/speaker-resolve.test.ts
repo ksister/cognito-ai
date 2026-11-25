@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { isGenericSpeaker, isMyNickname, isRealName, resolveAndFormat, resolveSpeakerTurns } from "./speaker-resolve"
+import {
+  COLLEAGUE,
+  isCompanyColleague,
+  isGenericSpeaker,
+  isMyNickname,
+  isRealName,
+  resolveAndFormat,
+  resolveSpeakerTurns,
+} from "./speaker-resolve"
 import type { TranscriptTurn } from "./types"
 
 const settings = { myNicknames: ["张三", "小张"], companyPrefixes: ["星图"] }
@@ -93,6 +101,51 @@ describe("resolveSpeakerTurns（气泡为主，昵称交叉核对）", () => {
   it("只改发言人，不改文字", () => {
     const { turns } = resolveSpeakerTurns([t({ text: "型号 ABC-1 报错", side: "left", speaker: "李四" })], settings)
     expect(turns[0].text).toBe("型号 ABC-1 报错")
+  })
+})
+
+describe("我方同事（名字带公司前缀、但不是我）", () => {
+  it("识别：带我方前缀的真名算同事，我自己、客户名、泛称都不算", () => {
+    expect(isCompanyColleague("星图_李四", settings)).toBe(true)
+    expect(isCompanyColleague("星图 王五", settings)).toBe(true)
+    expect(isCompanyColleague("星图-赵六", settings)).toBe(true)
+    expect(isCompanyColleague("星图_张三", settings)).toBe(false) // 是我
+    expect(isCompanyColleague("李四", settings)).toBe(false) // 客户，没前缀
+    expect(isCompanyColleague("星图_客户", settings)).toBe(false) // 泛称
+    expect(isCompanyColleague("", settings)).toBe(false)
+  })
+
+  it("左侧的同事标成「我方同事」，不归客户方（同事给的方法不能被当成客户说的）", () => {
+    const { turns, uncertain } = resolveSpeakerTurns(
+      [
+        t({ text: "建议先看日志", speaker: "星图_李四", side: "left" }),
+        t({ text: "日志在哪", speaker: "客户甲", side: "left" }),
+      ],
+      settings,
+    )
+    expect(turns[0].speaker).toBe(COLLEAGUE)
+    expect(turns[1].speaker).toBe("客户甲")
+    expect(uncertain.join("")).toContain("我方公司前缀")
+  })
+
+  it("右侧的同事也标成「我方同事」（不按气泡把他算成客户或我）", () => {
+    const { turns } = resolveSpeakerTurns([t({ text: "我来处理", speaker: "星图_李四", side: "right" })], settings)
+    expect(turns[0].speaker).toBe(COLLEAGUE)
+  })
+
+  it("没有侧别信息时，同事仍按名字认出来", () => {
+    const { turns } = resolveSpeakerTurns([t({ text: "看一下", speaker: "星图_李四" })], settings)
+    expect(turns[0].speaker).toBe(COLLEAGUE)
+  })
+
+  it("转写格式里显示「我方同事：…」", () => {
+    const { chat } = resolveAndFormat([t({ text: "先重启试试", speaker: "星图_李四", side: "left" })], settings)
+    expect(chat).toContain("我方同事：先重启试试")
+  })
+
+  it("前缀配置为空时不会误判同事", () => {
+    const noPrefix = { myNicknames: ["张三"], companyPrefixes: [] }
+    expect(isCompanyColleague("星图_李四", noPrefix)).toBe(false)
   })
 })
 
