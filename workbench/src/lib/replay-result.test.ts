@@ -9,6 +9,7 @@ import {
   estimateTokens,
   friendlyRunLabel,
   isBlankFieldReview,
+  isLegacySpeakerRun,
   isReplayIssueType,
   isSafeRecordId,
   isValidRunId,
@@ -298,6 +299,15 @@ describe("isSafeRecordId（拼路径前必须过）", () => {
     expect(tip).toContain("10.1 秒")
     expect(tip).toContain("0.0038 元")
     expect(tip).toContain("已核对")
+  })
+
+  it("「旧规则」判定：没有 rawSpeaker 的转写结果算旧规则，整理结果和带 rawSpeaker 的不算", () => {
+    expect(isLegacySpeakerRun(run({ mode: "retranscribe", turns: [{ speaker: "我", text: "好", kind: "speech" }] }))).toBe(true)
+    expect(
+      isLegacySpeakerRun(run({ mode: "retranscribe", turns: [{ speaker: "我", text: "好", kind: "speech", rawSpeaker: "张珂" }] })),
+    ).toBe(false)
+    expect(isLegacySpeakerRun(run({ mode: "reorganize", turns: undefined }))).toBe(false)
+    expect(isLegacySpeakerRun(run({ mode: "retranscribe", turns: [] }))).toBe(true)
   })
 
   it("从截图重新转写会同时显示两个提示词版本", () => {

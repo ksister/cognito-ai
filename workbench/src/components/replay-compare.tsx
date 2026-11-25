@@ -21,6 +21,7 @@ import {
   REPLAY_ISSUE_TYPES,
   compareReplayFields,
   friendlyRunLabel,
+  isLegacySpeakerRun,
   runTooltip,
   type ReplayFieldDiff,
   type ReplayFieldReview,
@@ -448,6 +449,11 @@ export function ReplayCompare({
             </div>
 
             <div className="space-y-1.5 border-b px-2 py-2 text-[11px]">
+              {selected && isLegacySpeakerRun(selected) && (
+                <p className="rounded bg-amber-50 px-2 py-1 text-amber-800">
+                  这次结果是「旧规则」跑的，发言人可能不准；核对请选历史里没有「旧规则」标记的那几次。
+                </p>
+              )}
               <div className="flex flex-wrap items-center gap-2">
                 <label className="inline-flex items-center gap-1.5">
                   <input
@@ -471,6 +477,7 @@ export function ReplayCompare({
                       .map((run, i) => (
                         <option key={run.runId} value={run.runId}>
                           {friendlyRunLabel(run, runs.length - i)}
+                          {isLegacySpeakerRun(run) ? " · 旧规则" : ""}
                         </option>
                       ))}
                   </select>
@@ -581,6 +588,7 @@ export function ReplayCompare({
                       {runs.map((run, i) => (
                         <option key={run.runId} value={run.runId} title={runTooltip(run)}>
                           {friendlyRunLabel(run, runs.length - i)}
+                          {isLegacySpeakerRun(run) ? " · 旧规则" : ""}
                         </option>
                       ))}
                     </select>
