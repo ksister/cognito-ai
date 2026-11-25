@@ -7,6 +7,7 @@ import {
   filterReplayRows,
   formatBytes,
   isFeishuEmpty,
+  parseCompanyPrefixes,
   parseNicknames,
   planReportLines,
   rLabel,
@@ -143,6 +144,18 @@ describe("parseNicknames", () => {
     expect(parseNicknames("张三、小张，张工; 张三")).toEqual(["张三", "小张", "张工"])
     expect(parseNicknames("   ")).toEqual([])
     expect(parseNicknames("A B")).toEqual(["A", "B"])
+  })
+})
+
+describe("parseCompanyPrefixes", () => {
+  it("分隔符同昵称，去掉首尾下划线，去重保序", () => {
+    expect(parseCompanyPrefixes("_星图_、星图, 云图")).toEqual(["星图", "云图"])
+    expect(parseCompanyPrefixes("   ")).toEqual([])
+    expect(parseCompanyPrefixes(["星图", "星图"])).toEqual(["星图"])
+  })
+
+  it("超长前缀丢掉", () => {
+    expect(parseCompanyPrefixes("一二三四五六七八九十一二三四五六七八九十一")).toEqual([])
   })
 })
 

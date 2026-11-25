@@ -72,6 +72,11 @@ export type ReplayRun = {
   costYuan: number | null
   /** 这次喂给模型的转写原文（带 OCR 标记行，界面上可展开查看）。 */
   transcript: string
+  /**
+   * 「从截图重新转写」时保存逐条发言人（带气泡左右）：
+   * 排查「客户被标成我」时看侧边分布，T29 取「我当时的实际回复」也用得上。
+   */
+  turns?: { speaker: string; text: string; kind?: "speech" | "time"; side?: "left" | "right" }[]
   /** 本次提取的字段，已经按表结构转成字符串（多选用 schema 的分隔符）。 */
   fields: Record<string, string>
   uncertain: string[]
@@ -316,6 +321,16 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
       updatedAt: str(reviewRaw.updatedAt) || "",
     }
   }
+  const turnsRaw = o.turns
+  const turns = Array.isArray(turnsRaw)
+    ? turnsRaw
+        .filter((t): t is Record<string, unknown> => Boolean(t) && typeof t === "object" && !Array.isArray(t))
+        .map((t) => {
+          const kind = t.kind === "time" ? ("time" as const) : ("speech" as const)
+          const side = t.side === "left" || t.side === "right" ? (t.side as "left" | "right") : undefined
+          return { speaker: str(t.speaker), text: str(t.text), kind, ...(side ? { side } : {}) }
+        })
+    : undefined
   return {
     version: 1,
     runId: o.runId,
@@ -331,6 +346,7 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
     usage,
     costYuan: typeof o.costYuan === "number" ? o.costYuan : null,
     transcript: str(o.transcript),
+    ...(turns && turns.length ? { turns } : {}),
     fields,
     uncertain: Array.isArray(o.uncertain) ? o.uncertain.map(String) : [],
     warning: str(o.warning) || undefined,

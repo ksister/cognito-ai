@@ -277,9 +277,14 @@ describe("normalizeSpeakerName", () => {
     expect(normalizeSpeakerName("张三🐻")).toBe("张三")
     expect(normalizeSpeakerName("张三🌹🌞💧")).toBe("张三")
   })
-  it("strips the company prefix（见 transcript.ts 的 SPEAKER_COMPANY_PREFIXES）", () => {
-    expect(normalizeSpeakerName("天云_张三")).toBe("张三")
-    expect(normalizeSpeakerName("天云 张三")).toBe("张三")
+  it("strips the company prefix passed in (前缀来自私有配置，代码里不写死)", () => {
+    expect(normalizeSpeakerName("星图_张三", ["星图"])).toBe("张三")
+    expect(normalizeSpeakerName("星图 张三", ["星图"])).toBe("张三")
+    expect(normalizeSpeakerName("星图-张三", ["星图"])).toBe("张三")
+  })
+  it("没有配置前缀时原样保留（不再按写死的公司名去猜）", () => {
+    expect(normalizeSpeakerName("星图_张三")).toBe("星图_张三")
+    expect(normalizeSpeakerName("星图_张三", [])).toBe("星图_张三")
   })
   it("leaves ordinary names alone", () => {
     expect(normalizeSpeakerName("张三")).toBe("张三")
@@ -308,9 +313,9 @@ describe("mergeTranscripts", () => {
   it("matches through emoji/company-prefix differences", () => {
     const c: TranscriptTurn[] = [
       { speaker: "张三🐻", text: "问题C", kind: "speech" },
-      { speaker: "天云_张三", text: "问题D", kind: "speech" },
+      { speaker: "星图_张三", text: "问题D", kind: "speech" },
     ]
-    expect(mergeTranscripts(a, c).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
+    expect(mergeTranscripts(a, c, ["星图"]).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])
   })
   it("merges a list in order", () => {
     expect(mergeTranscriptList([a, b]).map((t) => t.text)).toEqual(["问题A", "问题B", "问题C", "问题D"])

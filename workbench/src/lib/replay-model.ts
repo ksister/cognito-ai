@@ -214,6 +214,20 @@ export function parseNicknames(text: string): string[] {
   return out
 }
 
+/**
+ * 「我方公司名前缀」输入（T27 PR2）：分隔符同 parseNicknames，去掉首尾下划线，
+ * 去重保序，单个前缀最长 20 字。
+ */
+export function parseCompanyPrefixes(text: string | string[]): string[] {
+  const raw = Array.isArray(text) ? text.join(",") : String(text ?? "")
+  const out: string[] = []
+  for (const part of raw.split(/[,，、;；\s]+/)) {
+    const name = part.replace(/^[_\s]+|[_\s]+$/g, "").trim()
+    if (name && name.length <= 20 && !out.includes(name)) out.push(name)
+  }
+  return out
+}
+
 // ——— 列表筛选（页面上的搜索和几个开关，逻辑放这里才有单测） ——————
 
 export type ReplayListRow = {
