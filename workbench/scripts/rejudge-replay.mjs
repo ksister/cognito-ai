@@ -49,9 +49,11 @@ const apply = args.includes("--apply")
 const all = args.includes("--all")
 const recIdx = args.indexOf("--records")
 const only = recIdx >= 0 ? String(args[recIdx + 1] ?? "").split(",").map((s) => s.trim()).filter(Boolean) : []
+const kbIdx = args.indexOf("--kb")
 
 const env = readEnv()
-const kb = env.KB_DIR
+// --kb 可以指向一个临时目录（拿副本做 dry-run / 验证），默认用 .env.local 里的 KB_DIR。
+const kb = kbIdx >= 0 ? path.resolve(String(args[kbIdx + 1] ?? "")) : env.KB_DIR
 if (!kb) throw new Error("缺少 KB_DIR（只写在 .env.local）")
 const settingsRaw = JSON.parse(fs.readFileSync(path.join(kb, "config", "speakers.json"), "utf8"))
 const settings = {
