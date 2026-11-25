@@ -46,6 +46,8 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* T27 对比页：宽屏三列的断点（比 2xl 小一点，笔记本外接屏也能用上） */
+  --breakpoint-wide: 1400px;
 }
 
 :root {
@@ -126,5 +128,59 @@
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* T27 对比页：宽屏要三列，去掉布局默认的 max-w-6xl；页面自己用 data-wide 声明。 */
+main:has([data-wide]) > div {
+  max-width: none;
+}
+
+/*
+ * T27 对比页的三列布局。
+ * 用普通 CSS 而不是 Tailwind 的 wide: 变体：lg: 和 wide: 都是 media query，
+ * 按生成顺序后者胜出并不受控（实测 lg 排在 wide 后面，宽屏反而只剩两列）。
+ *   <1024px：单列（截图/转写二选一，字段对比在下）
+ *   ≥1024px：截图 1 份 + 字段对比 2 份（顶部切换截图/转写）
+ *   ≥1400px：截图 1 份 | 转写 1 份 | 字段对比 2 份，两列侧栏滚动固定、各自滚动
+ */
+.replay-grid {
+  display: grid;
+  gap: 0.75rem;
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 1024px) {
+  .replay-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  }
+}
+
+@media (min-width: 1400px) {
+  .replay-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+  }
+}
+
+@media (min-width: 1400px) {
+  /* 截图列、转写列：滚动时固定，各自单独滚动 */
+  .replay-side {
+    position: sticky;
+    top: 0.75rem;
+    max-height: calc(100vh - 1.5rem);
+    overflow-y: auto;
+  }
+
+  /* 宽屏两列都在，切换按钮没必要 */
+  .replay-toggle {
+    display: none;
+  }
+}
+
+@media (max-width: 1399.98px) {
+  /* 窄屏由「截图 / 转写」切换控制显示 */
+  .replay-hide-narrow {
+    display: none;
   }
 }
