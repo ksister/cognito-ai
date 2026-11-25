@@ -524,7 +524,14 @@ export function ReplayCompare({
                           onlyMe && line.speaker !== ME && "opacity-40",
                         )}
                       >
-                        {line.text}
+                        {line.kind === "time" ? (
+                          line.text
+                        ) : (
+                          <>
+                            <span className="font-semibold">{line.speaker || "未知"}：</span>
+                            {line.text}
+                          </>
+                        )}
                       </div>
                     ))
                   )}

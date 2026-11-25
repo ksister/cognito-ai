@@ -37,17 +37,18 @@ describe("泛称不算昵称", () => {
   })
 })
 
-describe("resolveSpeakerTurns（气泡为主，昵称交叉核对）", () => {
-  it("右侧一律是我（没昵称、泛称、真名都一样）", () => {
+describe("resolveSpeakerTurns（真名优先，其次气泡）", () => {
+  it("右侧：没名字/泛称是我；真名不是我时保留原名（并标 uncertain）", () => {
     const { turns } = resolveSpeakerTurns(
       [
         t({ text: "a", side: "right" }),
         t({ text: "b", side: "right", speaker: "对方" }),
         t({ text: "c", side: "right", speaker: "张三" }),
+        t({ text: "d", side: "right", speaker: "李四" }),
       ],
       settings,
     )
-    expect(turns.map((x) => x.speaker)).toEqual(["我", "我", "我"])
+    expect(turns.map((x) => x.speaker)).toEqual(["我", "我", "我", "李四"])
   })
 
   it("左侧是客户：真名保留，泛称/空写「客户」", () => {
@@ -62,10 +63,12 @@ describe("resolveSpeakerTurns（气泡为主，昵称交叉核对）", () => {
     expect(turns.map((x) => x.speaker)).toEqual(["客户", "客户", "李四"])
   })
 
-  it("昵称像我方但气泡在左：保持原样并标 uncertain", () => {
-    const out = resolveSpeakerTurns([t({ text: "a", side: "left", speaker: "星图_张三" })], settings)
-    expect(out.turns[0].speaker).toBe("星图_张三")
-    expect(out.uncertain.join("")).toContain("气泡在左侧")
+  it("真名命中「我的昵称」、气泡在左侧 → 仍然是「我」（飞书/钉钉靠左布局）", () => {
+    const out = resolveSpeakerTurns([t({ text: "a", side: "left", speaker: "张三" })], settings)
+    expect(out.turns[0].speaker).toBe("我")
+    // 带公司前缀的也算命中
+    const out2 = resolveSpeakerTurns([t({ text: "b", side: "left", speaker: "星图_张三" })], settings)
+    expect(out2.turns[0].speaker).toBe("我")
   })
 
   it("昵称不是我方但气泡在右：保持原样并标 uncertain", () => {
