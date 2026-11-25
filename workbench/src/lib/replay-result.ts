@@ -272,6 +272,16 @@ export function friendlyRunLabel(
   return `${when} · ${mode}（第 ${Math.max(1, ordinal)} 次）`
 }
 
+/**
+ * 「旧规则」的结果：转写结果里没有 `rawSpeaker`（重判之前跑的）。
+ * 这类结果的发言人可能还带着老规则的错，历史下拉里要标出来，免得核对时选错。
+ */
+export function isLegacySpeakerRun(run: Pick<ReplayRun, "mode" | "turns">): boolean {
+  if (run.mode !== "retranscribe") return false
+  if (!Array.isArray(run.turns) || !run.turns.length) return true
+  return !run.turns.every((t) => typeof t.rawSpeaker === "string")
+}
+
 /** 悬停提示：模型、提示词版本、耗时、费用、核对状态。 */
 export function runTooltip(
   run: Pick<ReplayRun, "model" | "promptVersion" | "transcriptPromptVersion" | "durationMs" | "costYuan" | "review" | "extractMode">,
