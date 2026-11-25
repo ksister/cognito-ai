@@ -40,7 +40,7 @@ export default async function ReplayRecordPage({ params }: { params: Promise<{ r
   }))
 
   return (
-    <>
+    <div data-wide>
       <Link href="/replay" className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
         <ChevronLeft className="size-4" />
         回放测试
@@ -65,6 +65,6 @@ export default async function ReplayRecordPage({ params }: { params: Promise<{ r
         state={state}
         shots={shots}
       />
-    </>
+    </div>
   )
 }

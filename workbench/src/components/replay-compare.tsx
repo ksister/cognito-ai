@@ -282,11 +282,17 @@ export function ReplayCompare({
 
   return (
     <>
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] lg:items-start">
-        {/* 左栏：截图 / 转写。窗口够宽时滚动固定，不够宽时自动排到上方。 */}
-        <aside className="space-y-2 lg:sticky lg:top-3">
+      {/* 宽屏（≥1400px）三列：截图 1/4 | 转写 1/4 | 字段对比 1/2；不够宽时退回「截图 / 转写」切换 */}
+      <div className="replay-grid">
+        {/* 截图列：滚动固定、单独滚动；不确定项放在这一列下面 */}
+        <div
+          className={cn(
+            "replay-side space-y-2",
+            pane === "transcript" && "replay-hide-narrow",
+          )}
+        >
           <Card className="py-0">
-            <div className="flex items-center gap-1 border-b px-2 py-1.5">
+            <div className="replay-toggle flex items-center gap-1 border-b px-2 py-1.5">
               <button
                 type="button"
                 onClick={() => setPane("shots")}
@@ -314,40 +320,34 @@ export function ReplayCompare({
             </div>
 
             <div className="p-2">
-              {pane === "shots" ? (
-                shots.length ? (
-                  <div className="space-y-2">
-                    {shots.map((shot) => (
-                      <button
-                        key={shot.index}
-                        type="button"
-                        onClick={() => setZoom(shot)}
-                        title="点击放大"
-                        className="block w-full overflow-hidden rounded-lg border bg-muted/20 text-left hover:border-primary/40"
-                      >
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={shot.url} alt={`第 ${shot.index + 1} 张截图`} className="w-full" />
-                        <span className="flex items-center justify-between px-2 py-1 text-[11px] text-muted-foreground">
-                          <span>第 {shot.index + 1} 张</span>
-                          {!shot.isChat && <span>{shot.category || "非聊天截图"}</span>}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="px-2 py-6 text-center text-xs text-muted-foreground">这条记录没有截图。</p>
-                )
-              ) : selected ? (
-                <pre className="max-h-[70vh] overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {selected.transcript}
-                </pre>
+              {shots.length ? (
+                <div className="space-y-2">
+                  {shots.map((shot) => (
+                    <button
+                      key={shot.index}
+                      type="button"
+                      onClick={() => setZoom(shot)}
+                      title="点击放大"
+                      className="block w-full overflow-hidden rounded-lg border bg-muted/20 text-left hover:border-primary/40"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={shot.url} alt={`第 ${shot.index + 1} 张截图`} className="w-full" />
+                      <span className="flex items-center justify-between px-2 py-1 text-[11px] text-muted-foreground">
+                        <span>第 {shot.index + 1} 张</span>
+                        {!shot.isChat && <span>{shot.category || "非聊天截图"}</span>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               ) : (
-                <p className="px-2 py-6 text-center text-xs text-muted-foreground">跑过一次之后，这里显示这次用的转写。</p>
+                <p className="px-2 py-6 text-center text-xs text-muted-foreground">这条记录没有截图。</p>
               )}
             </div>
+          </Card>
 
-            {(selected?.warning || (selected?.uncertain?.length ?? 0) > 0) && (
-              <div className="space-y-1 border-t px-2 py-2 text-[11px]">
+          {(selected?.warning || (selected?.uncertain?.length ?? 0) > 0) && (
+            <Card className="py-0">
+              <div className="space-y-1 px-3 py-2 text-[11px]">
                 {selected?.warning && <p className="text-amber-700">{selected.warning}</p>}
                 {selected && selected.uncertain.length > 0 && (
                   <div className="text-muted-foreground">
@@ -360,11 +360,42 @@ export function ReplayCompare({
                   </div>
                 )}
               </div>
-            )}
-          </Card>
-        </aside>
+            </Card>
+          )}
+        </div>
 
-        {/* 右栏：字段对比 */}
+        {/* 转写列：宽屏独立一列、单独滚动；窄屏和截图列二选一 */}
+        <div
+          className={cn(
+            "replay-side space-y-2",
+            pane === "shots" && "replay-hide-narrow",
+          )}
+        >
+          <Card className="py-0">
+            <div className="flex items-center justify-between border-b px-3 py-2 text-xs">
+              <span className="inline-flex items-center gap-1 font-medium">
+                <FileText className="size-3.5" />
+                转写{selected ? ` · ${transcriptLines} 行` : ""}
+              </span>
+              <span className="text-muted-foreground replay-toggle">
+                <button type="button" onClick={() => setPane("shots")} className="hover:text-foreground">
+                  返回截图
+                </button>
+              </span>
+            </div>
+            <div className="p-2">
+              {selected ? (
+                <pre className="max-h-[calc(100vh-8rem)] overflow-auto rounded-lg bg-muted/40 p-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
+                  {selected.transcript}
+                </pre>
+              ) : (
+                <p className="px-2 py-6 text-center text-xs text-muted-foreground">跑过一次之后，这里显示这次用的转写。</p>
+              )}
+            </div>
+          </Card>
+        </div>
+
+        {/* 字段对比：宽屏占一半 */}
         <div className="space-y-3">
           <Card className="py-3">
             <CardContent className="space-y-3 px-4">
