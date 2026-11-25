@@ -25,16 +25,19 @@ describe("转写提示词版本", () => {
     expect(sideAt).toBeLessThan(formatAt)
   })
 
-  it("v3 的四条规则：头像在哪边、气泡颜色、没有彩色气泡就全 left、连续消息归属", () => {
+  it("v3 的三条规则：头像在哪边、气泡颜色、连续消息归属", () => {
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("头像在哪一边")
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("不要按气泡离屏幕边缘的距离")
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("缩进不代表换人")
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("彩色气泡")
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("白色或灰色")
-    expect(TRANSCRIPT_SIDE_RULE_V3).toContain("一个彩色气泡都没有")
-    expect(TRANSCRIPT_SIDE_RULE_V3).toContain("全部填 left")
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("算上一个发送者的")
     expect(TRANSCRIPT_SIDE_RULE_V3).toContain("除非气泡颜色变了")
+  })
+
+  it("没有「一个彩色气泡都没有就全 left」这条（模型漏看彩色气泡会把我的消息全判成客户）", () => {
+    expect(TRANSCRIPT_SIDE_RULE_V3).not.toContain("一个彩色气泡都没有")
+    expect(TRANSCRIPT_SIDE_RULE_V3).not.toContain("全部填 left")
   })
 
   it("两版都保留逐字转写和格式要求", () => {
