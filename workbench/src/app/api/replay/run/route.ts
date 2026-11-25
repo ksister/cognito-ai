@@ -3,6 +3,7 @@ import { isValidReplayR } from "@/lib/replay-model"
 import { isSafeRecordId } from "@/lib/replay-result"
 import { listRuns } from "@/lib/replay-results-store"
 import {
+  parseReplayTranscriptVersion,
   previewReorganize,
   previewRetranscribe,
   runReorganize,
@@ -51,6 +52,11 @@ export async function GET(req: Request) {
   const url = new URL(req.url)
   const mode = parseMode(url.searchParams.get("mode"))
   if (!mode) return Response.json({ ok: false, error: "mode 只能是 reorganize 或 retranscribe" }, { status: 400 })
+  // 转写提示词版本：默认 v3；`?transcriptPrompt=v1` 用于 v1/v3 对照（20 条比对）。
+  const transcriptVersion = parseReplayTranscriptVersion(url.searchParams.get("transcriptPrompt"))
+  if (!transcriptVersion) {
+    return Response.json({ ok: false, error: "transcriptPrompt 只能是 v1 或 v3" }, { status: 400 })
+  }
   const loaded = await loadDetail(url.searchParams.get("r"))
   if ("error" in loaded) return Response.json({ ok: false, error: loaded.error }, { status: loaded.status })
   const { kbDir, detail } = loaded
@@ -58,7 +64,13 @@ export async function GET(req: Request) {
     const runs = await listRuns(kbDir, detail.recordId)
     const preview: ReorganizePreview | RetranscribePreview =
       mode === "retranscribe"
-        ? await previewRetranscribe({ kbDir, detail, previousRuns: runs.length, vlModel: vlConfig().vlModel })
+        ? await previewRetranscribe({
+            kbDir,
+            detail,
+            previousRuns: runs.length,
+            vlModel: vlConfig().vlModel,
+            transcriptVersion,
+          })
         : await previewReorganize({ kbDir, detail, previousRuns: runs.length })
     return Response.json({
       ok: true,
@@ -68,6 +80,7 @@ export async function GET(req: Request) {
       customer: detail.customer,
       screenshotCount: detail.shots.length,
       mode,
+      transcriptPromptVersion: mode === "retranscribe" ? transcriptVersion : null,
       preview,
     })
   } catch (e) {
@@ -80,9 +93,18 @@ export async function GET(req: Request) {
  * 只写 KB_DIR/replay/results/；不连飞书。
  */
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => ({}))) as { r?: unknown; mode?: unknown; confirm?: unknown }
+  const body = (await req.json().catch(() => ({}))) as {
+    r?: unknown
+    mode?: unknown
+    confirm?: unknown
+    transcriptPrompt?: unknown
+  }
   const mode = parseMode(body?.mode)
   if (!mode) return Response.json({ ok: false, error: "mode 只能是 reorganize 或 retranscribe" }, { status: 400 })
+  const transcriptVersion = parseReplayTranscriptVersion(body?.transcriptPrompt)
+  if (!transcriptVersion) {
+    return Response.json({ ok: false, error: "transcriptPrompt 只能是 v1 或 v3" }, { status: 400 })
+  }
   const loaded = await loadDetail(body?.r)
   if ("error" in loaded) return Response.json({ ok: false, error: loaded.error }, { status: loaded.status })
   if (body?.confirm !== true) {
@@ -99,6 +121,7 @@ export async function POST(req: Request) {
             vlModel: cfg.vlModel,
             dashscopeKey: cfg.dashscopeKey,
             dashscopeBase: cfg.dashscopeBase,
+            transcriptVersion,
           })
         : await runReorganize({ kbDir, detail })
     return Response.json({
