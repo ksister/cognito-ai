@@ -251,11 +251,18 @@ describe("isSafeRecordId（拼路径前必须过）", () => {
   })
 
   it("下拉里的大白话：时间 + 模式 + 第几次", () => {
+    // 不写死时区：按本机时区算出期望值（CI 在 UTC，本机在 +08:00）。
+    const pad = (n: number) => String(n).padStart(2, "0")
+    const local = (iso: string) => {
+      const d = new Date(iso)
+      return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    }
     const r = run({ at: "2026-11-24T09:51:22.000Z", mode: "retranscribe" })
-    expect(friendlyRunLabel(r, 2)).toBe("11-24 17:51 · 重新看图转写（第 2 次）")
-    expect(friendlyRunLabel(run({ at: "2026-11-24T09:00:00.000Z", mode: "reorganize" }), 1)).toBe(
-      "11-24 17:00 · 只重跑整理（第 1 次）",
-    )
+    expect(friendlyRunLabel(r, 2)).toBe(`${local(r.at)} · 重新看图转写（第 2 次）`)
+    const reorg = run({ at: "2026-11-24T09:00:00.000Z", mode: "reorganize" })
+    expect(friendlyRunLabel(reorg, 1)).toBe(`${local(reorg.at)} · 只重跑整理（第 1 次）`)
+    // 形状固定：MM-DD HH:MM · 模式（第 N 次）
+    expect(friendlyRunLabel(r, 2)).toMatch(/^\d{2}-\d{2} \d{2}:\d{2} · 重新看图转写（第 2 次）$/)
   })
 
   it("悬停提示写模型、提示词版本、耗时、费用和核对状态", () => {
