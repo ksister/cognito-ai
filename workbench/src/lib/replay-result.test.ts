@@ -16,6 +16,7 @@ import {
   latestRun,
   newRunId,
   normalizeForCompare,
+  parseReplayRun,
   replayFieldLabel,
   reviewHasIssue,
   runLabel,
@@ -173,10 +174,33 @@ describe("deriveRunState（T27 状态口径）", () => {
 })
 
 describe("review 判定", () => {
-  it("reviewHasIssue 只认四种问题类型", () => {
+  it("reviewHasIssue 认四种问题类型，也认记录级的「发言人有误」", () => {
     expect(reviewHasIssue(null)).toBe(false)
     expect(reviewHasIssue({ fields: {}, reviewedAt: null, updatedAt: "" })).toBe(false)
     expect(reviewHasIssue({ fields: { a: { note: "", issue: "fabricated" } }, reviewedAt: null, updatedAt: "" })).toBe(true)
+    expect(reviewHasIssue({ fields: {}, speakerError: true, reviewedAt: null, updatedAt: "" })).toBe(true)
+  })
+
+  it("「发言人有误」+ 错几条 会存在 review 里，并让状态变成有问题", () => {
+    const parsed = parseReplayRun({
+      version: 1,
+      runId: "20261124T090000-aaaa",
+      recordId: "recTEST",
+      r: "R153",
+      mode: "retranscribe",
+      at: "2026-11-24T09:00:00.000Z",
+      fields: {},
+      review: {
+        fields: {},
+        speakerError: true,
+        speakerErrorCount: 5,
+        reviewedAt: "2026-11-24T10:00:00.000Z",
+        updatedAt: "2026-11-24T10:00:00.000Z",
+      },
+    })
+    expect(parsed?.review?.speakerError).toBe(true)
+    expect(parsed?.review?.speakerErrorCount).toBe(5)
+    expect(deriveRunState([parsed!]).status).toBe("issue")
   })
 
   it("isReplayIssueType 挡住乱写的值", () => {

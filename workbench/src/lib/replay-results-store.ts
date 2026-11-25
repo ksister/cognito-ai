@@ -95,6 +95,8 @@ export async function saveRunReview({
   runId,
   fields,
   reviewed,
+  speakerError,
+  speakerErrorCount,
   at = new Date(),
 }: {
   kbDir: string
@@ -102,6 +104,10 @@ export async function saveRunReview({
   runId: string
   fields: unknown
   reviewed: boolean
+  /** 记录级：发言人有误（可选，不传就保持原来的值）。 */
+  speakerError?: boolean
+  /** 记录级：错了几条（可选）。 */
+  speakerErrorCount?: number
   at?: Date
 }): Promise<{ ok: true; run: ReplayRun } | { ok: false; error: string }> {
   // 接口层已经挡过一次，这里再挡一次：这层是拼路径的最后一关。
@@ -111,8 +117,13 @@ export async function saveRunReview({
   if (!run) return { ok: false, error: "找不到这次运行的结果文件，可能已被清理，请重新识别一次" }
   const now = at.toISOString()
   const nextFields: Record<string, ReplayFieldReview> = normalizeReviewFields(fields)
+  const nextSpeakerError = speakerError === undefined ? Boolean(run.review?.speakerError) : speakerError
+  const rawCount = speakerErrorCount === undefined ? (run.review?.speakerErrorCount ?? 0) : speakerErrorCount
+  const count = Number.isFinite(rawCount) ? Math.max(0, Math.min(9999, Math.round(rawCount))) : 0
   run.review = {
     fields: nextFields,
+    ...(nextSpeakerError ? { speakerError: true } : {}),
+    ...(count > 0 ? { speakerErrorCount: count } : {}),
     reviewedAt: reviewed ? now : (run.review?.reviewedAt ?? null),
     updatedAt: now,
   }

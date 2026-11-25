@@ -9,6 +9,8 @@ type Body = {
   runId?: unknown
   fields?: unknown
   reviewed?: unknown
+  speakerError?: unknown
+  speakerErrorCount?: unknown
 }
 
 /** 字段建议只接受字符串和四种问题类型，别的直接丢掉（存盘前在 lib 里还会再洗一遍）。 */
@@ -47,12 +49,19 @@ export async function POST(req: Request) {
       runId,
       fields: sanitizeFields(body.fields),
       reviewed: body.reviewed === true,
+      speakerError: typeof body.speakerError === "boolean" ? body.speakerError : undefined,
+      speakerErrorCount:
+        typeof body.speakerErrorCount === "number" && Number.isFinite(body.speakerErrorCount)
+          ? body.speakerErrorCount
+          : undefined,
     })
     if (!result.ok) return Response.json({ ok: false, error: result.error }, { status: 404 })
     return Response.json({
       ok: true,
       review: {
         fieldCount: Object.keys(result.run.review?.fields ?? {}).length,
+        speakerError: result.run.review?.speakerError === true,
+        speakerErrorCount: result.run.review?.speakerErrorCount ?? 0,
         reviewedAt: result.run.review?.reviewedAt ?? null,
         updatedAt: result.run.review?.updatedAt ?? null,
       },
