@@ -13,7 +13,7 @@ import { estimateCost, priceFor, readModelPrices, type ModelPrice, type ModelPri
 import { averageUsage, type TokenAverage } from "./replay-model"
 import { loadCompanyPrefixes, loadSpeakersSettings } from "./speakers-config"
 import { resolveAndFormat } from "./speaker-resolve"
-import { buildTranscriptPromptV2, transcribeImageFile, TRANSCRIPT_PROMPT_VERSION_V2 } from "./vl-transcribe"
+import { buildSnapshotTranscriptPrompt, transcribeImageFile, TRANSCRIPT_PROMPT_VERSION_V1 } from "./vl-transcribe"
 import { runPool } from "./concurrency"
 import {
   estimateReorganizeCost,
@@ -133,6 +133,20 @@ export function feishuFieldsFromDetail(detail: ReplayRecordDetail): Record<strin
   }
 }
 
+/**
+ * 日期和客户：平时靠表单和聊天窗口标题补，回放里从快照补。
+ * 这两列不是模型该判断的东西，补上之后对比界面不会再显示成「不同」。
+ */
+export function fillContextFields(
+  fields: Record<string, string>,
+  detail: ReplayRecordDetail,
+): Record<string, string> {
+  const out = { ...fields }
+  if (detail.date) out.date = detail.date
+  if (detail.customer) out.customer = detail.customer
+  return out
+}
+
 export type ReorganizePreview = {
   mode: "reorganize"
   model: string
@@ -215,7 +229,7 @@ export async function runReorganize({
   const me = settings.ok ? settings.settings.myNicknames[0] : undefined
 
   const t0 = Date.now()
-  const { result, usage } = await extractRecordWithUsage(chat, { me })
+  const { result, usage } = await extractRecordWithUsage(chat, { me, customer: detail.customer || undefined })
   const durationMs = Date.now() - t0
 
   const prices = await readModelPrices(kbDir)
@@ -242,7 +256,7 @@ export async function runReorganize({
     usage,
     costYuan,
     transcript: transcript.text,
-    fields: draftToFields(result.draft, schema),
+    fields: fillContextFields(draftToFields(result.draft, schema), detail),
     uncertain: result.draft.uncertain ?? [],
     warning: warnings.length ? warnings.join("；") : undefined,
     review: null,
@@ -357,7 +371,7 @@ export async function previewRetranscribe({
     vlModel,
     model: aiModelName(),
     promptVersion: FIELDS_PROMPT_VERSION,
-    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V2,
+    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V1,
     shots: chatShots.length,
     skipped: detail.shots.length - chatShots.length,
     missingMedia,
@@ -378,10 +392,11 @@ export async function previewRetranscribe({
 
 /**
  * 执行「从截图重新转写」：
- *  1. 用 v2 提示词把快照里的聊天截图重新转写（每张一次 VL 调用，按顺序拼接去重叠）；
- *  2. 用「我的昵称」+ 气泡左右定发言人（`resolveSpeakerTurns`）；
- *  3. 用同一套字段提示词出字段；
- *  4. 结果写 replay/results/，记 transcriptPromptVersion=transcript-v2。
+ *  1. 用 v1 提示词把快照里的聊天截图重新转写（每张一次 VL 调用，按顺序拼接去重叠）。
+ *     v1 就是主流程那一版：3 次实验逐字一致；v2 会把飞书的自动翻译小字拆成消息，已弃用。
+ *  2. 用气泡左右定发言人、昵称交叉核对（`resolveSpeakerTurns`）。
+ *  3. 用同一套字段提示词出字段；日期和客户从快照补（这两列本来靠上下文）。
+ *  4. 结果写 replay/results/，记 transcriptPromptVersion=transcript-v1。
  *
  * 只读快照，不写 snapshot/transcripts/（那是快照自己的证据），也不写飞书。
  */
@@ -408,7 +423,7 @@ export async function runRetranscribe({
   if (!dashscopeKey || !vlModel) throw new Error("缺少 DASHSCOPE_API_KEY / DASHSCOPE_VL_MODEL，无法重新转写截图")
   const settingsState = await loadSpeakersSettings(kbDir)
   const settings = settingsState.ok ? settingsState.settings : { myNicknames: [], companyPrefixes: [] }
-  const prompt = buildTranscriptPromptV2({ myNicknames: settings.myNicknames })
+  const prompt = buildSnapshotTranscriptPrompt()
 
   const chatShots = detail.shots.filter((s) => s.isChat !== false)
   if (!chatShots.length) throw new Error("这条记录没有聊天截图，无法从截图重新转写")
@@ -450,6 +465,7 @@ export async function runRetranscribe({
 
   const { result: fieldsResult, usage: fieldUsage } = await extractRecordWithUsage(chatForModel, {
     me: settings.myNicknames[0],
+    customer: detail.customer || undefined,
   })
   const durationMs = Date.now() - t0
 
@@ -480,7 +496,7 @@ export async function runRetranscribe({
     durationMs,
     model: aiModelName(),
     promptVersion: FIELDS_PROMPT_VERSION,
-    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V2,
+    transcriptPromptVersion: TRANSCRIPT_PROMPT_VERSION_V1,
     extractMode: fieldsResult.mode,
     usage: { promptTokens: vlPromptTokens + (fieldUsage?.promptTokens ?? 0), completionTokens: vlCompletionTokens + (fieldUsage?.completionTokens ?? 0) },
     costYuan,
@@ -491,7 +507,7 @@ export async function runRetranscribe({
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
     })),
-    fields: draftToFields(fieldsResult.draft, schema),
+    fields: fillContextFields(draftToFields(fieldsResult.draft, schema), detail),
     uncertain: mergeUncertain(speakerUncertain, fieldsResult.draft.uncertain ?? []),
     warning: warnings.length ? warnings.join("；") : undefined,
     review: null,

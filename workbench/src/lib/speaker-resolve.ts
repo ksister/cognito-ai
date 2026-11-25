@@ -1,12 +1,14 @@
 import { formatScreenshotChat, normalizeSpeakerName, type TranscriptTurn } from "./transcript.ts"
 
 /**
- * T27 PR2：回放「从截图重新转写」的发言人判断（提示词 v2 配套的确定性规则）。
+ * T27 PR2：回放「从截图重新转写」的发言人判断（配合提示词 v1 输出的 `side`）。
  *
- * 判断顺序：
- *  1. 昵称命中「我的昵称」（去掉我方公司前缀后**完全相等**）→ 我；
- *  2. 否则看气泡位置：右侧 → 我；左侧 → 客户（有昵称就保留昵称原文）；
- *  3. 没有气泡位置也没有昵称 → 保留原发言人，识别不了记「未知」并写 uncertain。
+ * 规则（11-25 用户定）：
+ *  ① 以气泡在哪一侧为准：右侧是我，左侧是客户；
+ *  ② 「我」「客户」「对方」这类泛称不算昵称，不作为判断依据；
+ *  ③ 真名昵称只用来交叉核对：昵称属于我但气泡在左、或昵称不属于我但气泡在右，
+ *     保持截图上的原样并记 uncertain（不硬改成我/客户）；
+ *  ④ 没有侧别信息时才只看真名昵称；两样都没有就标「未知」。
  *
  * 只改「这条转写算谁的」，不改文字本身；时间分隔行不参与判断。
  *
@@ -20,30 +22,44 @@ export type SpeakerSettings = {
 
 export const ME = "我"
 export const CUSTOMER = "客户"
+export const UNKNOWN = "未知"
+
+/** 泛称：不能拿来判断「这个人是谁」。 */
+export const GENERIC_SPEAKERS = ["我", "客户", "对方", "本人", "自己", "对方用户"] as const
+
+export function isGenericSpeaker(name: string): boolean {
+  const n = normalizeSpeakerName(String(name ?? ""), [])
+  return !n || (GENERIC_SPEAKERS as readonly string[]).includes(n)
+}
 
 /** 去掉公司前缀和表情后，昵称是否命中「我的昵称」。 */
 export function isMyNickname(speaker: string, settings: SpeakerSettings): boolean {
   const name = normalizeSpeakerName(speaker, settings.companyPrefixes)
-  if (!name) return false
+  if (!name || isGenericSpeaker(name)) return false
   return settings.myNicknames.some((mine) => {
     const target = normalizeSpeakerName(mine, settings.companyPrefixes)
-    return Boolean(target) && target === name
+    return Boolean(target) && !isGenericSpeaker(target) && target === name
   })
+}
+
+/** 真名昵称（既不是泛称，也不是空）。 */
+export function isRealName(speaker: string, settings: SpeakerSettings): boolean {
+  const name = normalizeSpeakerName(speaker, settings.companyPrefixes)
+  return Boolean(name) && !isGenericSpeaker(name)
 }
 
 export type ResolvedTranscript = {
   turns: TranscriptTurn[]
-  /** 不能确定的地方（数量，不带名字）。 */
+  /** 不能确定的地方（只报数量，不带名字）。 */
   uncertain: string[]
 }
 
-/**
- * 按「昵称 + 气泡左右」定发言人。
- * 右侧但昵称不在配置里时仍记为「我」（气泡位置是可靠信号），并提示去设置页补昵称。
- */
+/** 按「气泡左右为主、昵称交叉核对」定发言人。 */
 export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSettings): ResolvedTranscript {
   const resolved: TranscriptTurn[] = []
-  let unmatchedRight = 0
+  let mineButLeft = 0
+  let otherButRight = 0
+  let noSideMine = 0
   let unknown = 0
 
   for (const turn of turns) {
@@ -52,35 +68,56 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
       continue
     }
     const speaker = turn.speaker.trim()
-    if (isMyNickname(speaker, settings)) {
-      resolved.push({ ...turn, speaker: ME })
+    const mine = isMyNickname(speaker, settings)
+    const real = isRealName(speaker, settings)
+
+    // ③ 交叉核对：昵称和气泡位置对不上时，保留截图上的原样。
+    if (turn.side === "left" && mine) {
+      mineButLeft++
+      resolved.push({ ...turn, speaker: speaker || ME })
       continue
     }
+    if (turn.side === "right" && real && !mine) {
+      otherButRight++
+      resolved.push({ ...turn, speaker })
+      continue
+    }
+
+    // ①② 以气泡为准；泛称和空名字不当作身份。
     if (turn.side === "right") {
-      if (speaker && speaker !== ME) unmatchedRight++
       resolved.push({ ...turn, speaker: ME })
       continue
     }
     if (turn.side === "left") {
-      resolved.push({ ...turn, speaker: speaker && speaker !== CUSTOMER ? speaker : CUSTOMER })
+      resolved.push({ ...turn, speaker: real ? speaker : CUSTOMER })
       continue
     }
-    // 没有气泡位置：有昵称就保留，没有就记未知。
-    if (!speaker || speaker === ME) {
-      unknown++
-      resolved.push({ ...turn, speaker: "未知" })
+
+    // ④ 没有侧别：只看真名昵称。
+    if (mine) {
+      noSideMine++
+      resolved.push({ ...turn, speaker: ME })
       continue
     }
-    resolved.push(turn)
+    if (real) {
+      resolved.push({ ...turn, speaker })
+      continue
+    }
+    unknown++
+    resolved.push({ ...turn, speaker: UNKNOWN })
   }
 
   const uncertain: string[] = []
-  if (unmatchedRight) {
-    uncertain.push(
-      `有 ${unmatchedRight} 条右侧（我）消息的昵称不在设置页的「我的昵称」里，已按气泡位置记为「我」；如果其中有客户，去设置页核对昵称`,
-    )
+  if (mineButLeft) {
+    uncertain.push(`有 ${mineButLeft} 条消息的昵称在「我的昵称」里，但气泡在左侧；已保留截图上的昵称，请核对`)
   }
-  if (unknown) uncertain.push(`有 ${unknown} 条消息没有昵称、也读不出气泡在左还是右，发言人标为「未知」`)
+  if (otherButRight) {
+    uncertain.push(`有 ${otherButRight} 条消息的昵称不在「我的昵称」里，但气泡在右侧；已保留截图上的昵称，请核对`)
+  }
+  if (noSideMine) {
+    uncertain.push(`有 ${noSideMine} 条消息读不出气泡左右，是按昵称认成「我」的`)
+  }
+  if (unknown) uncertain.push(`有 ${unknown} 条消息既没有昵称、也读不出气泡左右，发言人标为「未知」`)
   return { turns: resolved, uncertain }
 }
 
