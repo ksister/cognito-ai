@@ -75,8 +75,16 @@ export type ReplayRun = {
   /**
    * 「从截图重新转写」时保存逐条发言人（带气泡左右）：
    * 排查「客户被标成我」时看侧边分布，T29 取「我当时的实际回复」也用得上。
+   * `rawSpeaker` 是模型在截图里看到的原始名字（空 = 模型没给名字），用来统计
+   * 「右侧但没名字却被判成我」这类错误。
    */
-  turns?: { speaker: string; text: string; kind?: "speech" | "time"; side?: "left" | "right" }[]
+  turns?: {
+    speaker: string
+    text: string
+    kind?: "speech" | "time"
+    side?: "left" | "right"
+    rawSpeaker?: string
+  }[]
   /** 本次提取的字段，已经按表结构转成字符串（多选用 schema 的分隔符）。 */
   fields: Record<string, string>
   uncertain: string[]
@@ -357,7 +365,14 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
         .map((t) => {
           const kind = t.kind === "time" ? ("time" as const) : ("speech" as const)
           const side = t.side === "left" || t.side === "right" ? (t.side as "left" | "right") : undefined
-          return { speaker: str(t.speaker), text: str(t.text), kind, ...(side ? { side } : {}) }
+          const rawSpeaker = typeof t.rawSpeaker === "string" ? t.rawSpeaker : undefined
+          return {
+            speaker: str(t.speaker),
+            text: str(t.text),
+            kind,
+            ...(side ? { side } : {}),
+            ...(rawSpeaker !== undefined ? { rawSpeaker } : {}),
+          }
         })
     : undefined
   return {

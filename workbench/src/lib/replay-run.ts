@@ -524,8 +524,9 @@ export async function runRetranscribe({
     usage: { promptTokens: vlPromptTokens + (fieldUsage?.promptTokens ?? 0), completionTokens: vlCompletionTokens + (fieldUsage?.completionTokens ?? 0) },
     costYuan,
     transcript: chat,
-    turns: resolvedTurns.map((t) => ({
+    turns: resolvedTurns.map((t, i) => ({
       speaker: t.speaker,
+      rawSpeaker: mergedTurns[i]?.speaker ?? "",
       text: t.text,
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
