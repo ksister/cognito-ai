@@ -66,6 +66,22 @@ function stripCitation(text: string): string {
   return String(text ?? "").replace(CITATION_SUFFIX, "").trim() || String(text ?? "").trim()
 }
 
+/**
+ * 旧结果文件里没有 `turn.quote`、只有正文拼的「（引用 名字：内容）」：
+ * 从正文里解析出来显示，不能直接丢掉。
+ */
+export function parseCitationFromText(text: string): { name: string; text: string } | null {
+  const s = String(text ?? "")
+  const i = s.lastIndexOf("（引用 ")
+  if (i < 0) return null
+  const m = s.slice(i).match(/^（引用\s([^：:\n]{1,40})：([\s\S]*)）\s*$/)
+  if (!m) return null
+  const name = m[1].trim()
+  const quoteText = m[2].trim()
+  if (!name || !quoteText) return null
+  return { name, text: quoteText }
+}
+
 /** 引用是谁：优先前面那条原话的截图原始名字（不是那种才用「客户」这类角色名）。 */
 function resolveQuoteDisplayName(
   quote: { name: string; text: string },
@@ -165,7 +181,8 @@ export function buildBubbleItems(turns: BubbleInputTurn[], marks: BubbleInputMar
           : turn.speaker === "未知" || /^(系统|提示)/.test(turn.speaker)
             ? "system"
             : "other"
-    const quote = turn.quote ?? null
+    // 引用：优先用结果文件里的 turn.quote；旧数据没有 quote 时从正文拼接处解析（不能丢）。
+    const quote = turn.quote ?? parseCitationFromText(turn.text)
     const quoteVerified = quote ? quoteFoundInEarlier(earlier.map((e) => e.text), quote.text) : true
     const quoteDisplayName = quote
       ? resolveQuoteDisplayName(quote, earlier.map((e) => ({ text: e.text, rawSpeaker: e.rawSpeaker })))

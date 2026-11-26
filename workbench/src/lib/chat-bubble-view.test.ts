@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   buildBubbleItems,
+  parseCitationFromText,
   quoteFoundInEarlier,
   similarText,
   summarizeBubbles,
@@ -73,6 +74,37 @@ describe("buildBubbleItems", () => {
     expect(items[0].markedTypes).toEqual(["text"])
     expect(items[0].staleMarkCount).toBe(0)
     expect(items[0].displayText).toBe("读码率偏低")
+  })
+
+  it("真实结果文件结构：带 quote 字段的，气泡下面能显示引用", () => {
+    const items = buildBubbleItems([
+      t({ speaker: "客户", text: "指的是扫描长度不够", rawSpeaker: "工作 镭创 吕忠维" }),
+      t({
+        speaker: "我",
+        text: "这个也有（引用 客户：指的是扫描长度不够）",
+        quote: { name: "客户", text: "指的是扫描长度不够", source: "name" },
+      }),
+    ])
+    expect(items[1].quote).not.toBeNull()
+    expect(items[1].displayText).toBe("这个也有")
+    expect(items[1].quoteDisplayName).toBe("工作 镭创 吕忠维")
+  })
+
+  it("旧结果（只有正文拼接、没有 quote 字段）也要把引用解析出来", () => {
+    const items = buildBubbleItems([
+      t({ speaker: "我", text: "这个也有（引用 客户：指的是扫描长度不够）" }),
+      t({ speaker: "客户", text: "这个取图时间多少（引用 我：这个也有）" }),
+    ])
+    expect(items[0].quote).toMatchObject({ name: "客户", text: "指的是扫描长度不够" })
+    expect(items[0].displayText).toBe("这个也有")
+    expect(items[1].quote).toMatchObject({ name: "我", text: "这个也有" })
+    expect(items[1].displayText).toBe("这个取图时间多少")
+  })
+
+  it("parseCitationFromText 处理带括号的引用内容", () => {
+    const q = parseCitationFromText("收到（引用 客户：先看 A（B）再说）")
+    expect(q).toEqual({ name: "客户", text: "先看 A（B）再说" })
+    expect(parseCitationFromText("没有引用的一句话")).toBeNull()
   })
 
   it("「不是引用」标记会计入统计", () => {

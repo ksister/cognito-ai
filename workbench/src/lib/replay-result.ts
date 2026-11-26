@@ -266,6 +266,19 @@ export function isReplayLineMarkType(v: unknown): v is ReplayLineMarkType {
   return v === "speaker" || v === "text" || v === "extra" || v === "quote" || v === "unquote"
 }
 
+/** 结果文件里的 turn.quote（引用结构）；形状不对就当没有。 */
+function normalizeTurnQuote(
+  raw: unknown,
+): { name: string; text: string; source?: "name" | "dup" | "reply" } | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const o = raw as Record<string, unknown>
+  const name = str(o.name)
+  const text = str(o.text)
+  if (!name && !text) return undefined
+  const source = o.source === "name" || o.source === "dup" || o.source === "reply" ? o.source : undefined
+  return { name, text, ...(source ? { source } : {}) }
+}
+
 export type ReplayRunState = {
   status: "untested" | "tested" | "issue"
   latestRunId: string | null
@@ -454,12 +467,14 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
           const kind = t.kind === "time" ? ("time" as const) : ("speech" as const)
           const side = t.side === "left" || t.side === "right" ? (t.side as "left" | "right") : undefined
           const rawSpeaker = typeof t.rawSpeaker === "string" ? t.rawSpeaker : undefined
+          const quote = normalizeTurnQuote(t.quote)
           return {
             speaker: str(t.speaker),
             text: str(t.text),
             kind,
             ...(side ? { side } : {}),
             ...(rawSpeaker !== undefined ? { rawSpeaker } : {}),
+            ...(quote ? { quote } : {}),
           }
         })
     : undefined
