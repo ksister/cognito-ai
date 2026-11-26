@@ -117,7 +117,14 @@ function quoteNameSeen(known: Set<string>, quotedName: string): boolean {
 export function mergeQuoteTurns(
   turns: TranscriptTurn[],
   extraNames: string[] = [],
-): { turns: TranscriptTurn[]; quotes: number; quotesByName: number; quotesByDup: number } {
+): {
+  turns: TranscriptTurn[]
+  quotes: number
+  quotesByName: number
+  quotesByDup: number
+  repliesSplit: number
+  repliesUnsplit: number
+} {
   // 先修一种坏形状：模型把「名字：内容」整个塞进发言人、正文是空的（R079 里 lily 那行就是这样，
   // 导致「lily」明明在昵称里却没被认成我）。拆开发言人和正文再判断。
   const normalized = turns.map((t) => splitSpeakerContent(t))
@@ -137,6 +144,8 @@ export function mergeQuoteTurns(
   let quotes = 0
   let quotesByName = 0
   let quotesByDup = 0
+  let repliesSplit = 0
+  let repliesUnsplit = 0
 
   const appendQuote = (baseIdx: number, quote: { name: string; text: string }) => {
     const base = out[baseIdx]
@@ -156,12 +165,37 @@ export function mergeQuoteTurns(
     }
     const prev = lastBase()
 
+    // 飞书「回复」：内容是「|回复 某人：被引用的话 + 实际回复」。
+    // 不能并进上一条（会吞掉用户的新消息）：保留为当前发言人自己的消息，只把引用拆出来。
+    const reply = parseReplyLine(turn.text, normalized, index, known)
+    if (reply) {
+      const { quote, body } = reply
+      const nextText = quote
+        ? body
+          ? `${body}（引用 ${quote.name}：${quote.text}）`
+          : `（引用 ${quote.name}：${quote.text}）`
+        : body
+      out.push({ ...turn, text: nextText, ...(quote ? { quote } : {}) })
+      if (quote) repliesSplit++
+      else repliesUnsplit++
+      continue
+    }
+
+    // 模型把「名字：内容」整行塞进发言人、正文为空：这本身就是引用的形状，直接按规则 ① 并进上一条。
+    if (turn.stuffedFromSpeaker && prev >= 0) {
+      appendQuote(prev, { name: turn.speaker.trim(), text: turn.text.trim() })
+      quotes++
+      quotesByName++
+      continue
+    }
+
     // ① 「见过的名字：内容」
     const head = textHead(turn.text)
     const m = head.match(QUOTE_LINE)
     const quotedName = m?.[1]?.trim() ?? ""
     const quotedText = m?.[2]?.trim() ?? ""
-    const nameLooksLikeName = Boolean(quotedName) && quotedName.length <= 20 && !NAME_BAD_CHARS.test(quotedName)
+    const nameLooksLikeName =
+      Boolean(quotedName) && quotedName.length <= 20 && !NAME_BAD_CHARS.test(quotedName) && !quotedName.includes("回复")
     if (prev >= 0 && m && quotedText && nameLooksLikeName && quoteNameSeen(known, quotedName)) {
       appendQuote(prev, { name: quotedName, text: quotedText })
       quotes++
@@ -182,7 +216,87 @@ export function mergeQuoteTurns(
     out.push(turn)
   }
 
-  return { turns: out, quotes, quotesByName, quotesByDup }
+  return { turns: out, quotes, quotesByName, quotesByDup, repliesSplit, repliesUnsplit }
+}
+
+/** 飞书「回复」行：前面可能有 | ｜ 或空格，然后是「回复 名字：…」。 */
+const REPLY_LINE = /^[\s|｜]*回复\s*([^：:\n]{1,20})[：:]\s*([\s\S]+)$/
+
+/**
+ * 解析「回复」行：把引用内容从「被引用的话 + 实际回复」里拆出来。
+ *
+ * 做法：拿冒号后面的内容和前面「这个人说过的话」比对，取**最长的、相似度 ≥0.9 的前缀**当引用；
+ * 拆不开时返回 `{ quote: null, body: 原样 }`，交给 uncertain 提示人工看。
+ */
+function parseReplyLine(
+  text: string,
+  turns: TranscriptTurn[],
+  index: number,
+  known: Set<string>,
+): { quote: { name: string; text: string } | null; body: string } | null {
+  const m = String(text ?? "").match(REPLY_LINE)
+  if (!m) return null
+  const name = m[1].trim()
+  const rest = m[2].trim()
+  if (!name || !rest) return null
+
+  // 优先在「这个人的消息」里找，找不到再扩大到前面所有消息（发言人被标成「客户」这类情况）。
+  const own: TranscriptTurn[] = []
+  const others: TranscriptTurn[] = []
+  for (let k = index - 1; k >= 0; k--) {
+    const t = turns[k]
+    if (t.kind === "time") continue
+    if (quoteNameSeen(known, t.speaker) && sameName(t.speaker, name)) own.push(t)
+    else others.push(t)
+  }
+  const pools = own.length ? [own, others] : [others]
+
+  let best: { quote: { name: string; text: string }; body: string } | null = null
+  for (const pool of pools) {
+    for (const source of pool) {
+      const cut = prefixQuoteCut(rest, source.text)
+      if (cut <= 0) continue
+      if (!best || source.text.length > best.quote.text.length) {
+        best = { quote: { name, text: source.text }, body: rest.slice(cut).trim() }
+      }
+    }
+    if (best) break
+  }
+  if (best) return best
+  return { quote: null, body: String(text ?? "").trim() }
+}
+
+/** 两个名字是否算同一个人（精确或后缀，两边 ≥2 字）。 */
+function sameName(a: string, b: string): boolean {
+  const x = normalizeSpeakerForCompare(a)
+  const y = normalizeSpeakerForCompare(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  if (x.length >= 2 && y.length > x.length && y.endsWith(x)) return true
+  if (y.length >= 2 && x.length > y.length && x.endsWith(y)) return true
+  return false
+}
+
+/** `rest` 以 `source` 为前缀（相似度 ≥0.9）时返回前缀在原串里的长度，否则 0。 */
+function prefixQuoteCut(rest: string, source: string): number {
+  const src = normalizeForAlignLoose(source)
+  if (src.length < 2) return 0
+  let bestSim = 0
+  let bestCut = 0
+  const maxLen = Math.min(rest.length, src.length + 4)
+  for (let p = 2; p <= maxLen; p++) {
+    const head = normalizeForAlignLoose(rest.slice(0, p))
+    if (!head) continue
+    // 归一后完全一样 = 最理想；否则只允许比原文多 1 个字（多出的是正文开头）。
+    if (head === src) return p
+    if (head.length > src.length + 1) continue
+    const sim = similarityLoose(head, src)
+    if (sim >= DUP_QUOTE_SIM && sim > bestSim) {
+      bestSim = sim
+      bestCut = p
+    }
+  }
+  return bestCut
 }
 
 /** 「和前面某条消息几乎相同」的判定参数（理由见 mergeQuoteTurns 注释）。 */
@@ -233,7 +347,7 @@ function similarityLoose(a: string, b: string): number {
 export function splitSpeakerContent(turn: TranscriptTurn): TranscriptTurn {
   const split = splitSpeakerContentTurn(turn)
   if (split === turn) return turn
-  return { ...split, rawSpeaker: turn.rawSpeaker ?? split.speaker }
+  return { ...split, rawSpeaker: turn.rawSpeaker ?? split.speaker, stuffedFromSpeaker: true }
 }
 
 export function isGenericSpeaker(name: string): boolean {
@@ -276,12 +390,16 @@ export type ResolvedTranscript = {
   turns: TranscriptTurn[]
   /** 不能确定的地方（只报数量，不带名字）。 */
   uncertain: string[]
-  /** 识别出的引用行数（已并进前一条消息）。 */
+  /** 识别出的引用行数（并进前一条消息的）。 */
   quotes: number
   /** 其中按「名字：内容」认出的行数。 */
   quotesByName: number
   /** 其中按「和前面消息几乎重复」认出的行数。 */
   quotesByDup: number
+  /** 飞书「回复」行：拆出引用内容、保留为原消息的行数。 */
+  repliesSplit: number
+  /** 飞书「回复」行里拆不出引用内容、保留原样的行数。 */
+  repliesUnsplit: number
 }
 
 /** 定好发言人后同时留下「模型看到的原始名字」，重判和排查都要用。 */
@@ -369,7 +487,21 @@ export function resolveSpeakerTurns(
     if (withQuotes.quotesByDup) parts.push(`和前面消息几乎重复${withQuotes.quotesByDup} 行`)
     uncertain.push(`有 ${withQuotes.quotes} 行是引用（${parts.join("、")}），已并进上一条消息，标为「（引用 …）」`)
   }
-  return { turns: resolved, uncertain, quotes: withQuotes.quotes, quotesByName: withQuotes.quotesByName, quotesByDup: withQuotes.quotesByDup }
+  if (withQuotes.repliesSplit) {
+    uncertain.push(`有 ${withQuotes.repliesSplit} 行是飞书「回复」，引用内容已拆出来，正文保留为原消息`)
+  }
+  if (withQuotes.repliesUnsplit) {
+    uncertain.push(`有 ${withQuotes.repliesUnsplit} 行是飞书「回复」，但拆不出引用内容；已保留原样，请核对`)
+  }
+  return {
+    turns: resolved,
+    uncertain,
+    quotes: withQuotes.quotes,
+    quotesByName: withQuotes.quotesByName,
+    quotesByDup: withQuotes.quotesByDup,
+    repliesSplit: withQuotes.repliesSplit,
+    repliesUnsplit: withQuotes.repliesUnsplit,
+  }
 }
 
 /** 转写行 → 原始聊天记录格式（首行仍是 OCR 标记，由 formatScreenshotChat 加）。 */
@@ -377,7 +509,16 @@ export function resolveAndFormat(
   turns: TranscriptTurn[],
   settings: SpeakerSettings,
   extraNames: string[] = [],
-): { chat: string; uncertain: string[]; turns: TranscriptTurn[]; quotes: number; quotesByName: number; quotesByDup: number } {
-  const { turns: resolved, uncertain, quotes, quotesByName, quotesByDup } = resolveSpeakerTurns(turns, settings, extraNames)
-  return { chat: formatScreenshotChat(resolved), uncertain, turns: resolved, quotes, quotesByName, quotesByDup }
+): {
+  chat: string
+  uncertain: string[]
+  turns: TranscriptTurn[]
+  quotes: number
+  quotesByName: number
+  quotesByDup: number
+  repliesSplit: number
+  repliesUnsplit: number
+} {
+  const resolvedAll = resolveSpeakerTurns(turns, settings, extraNames)
+  return { chat: formatScreenshotChat(resolvedAll.turns), ...resolvedAll }
 }

@@ -128,6 +128,8 @@ export type TranscriptTurn = {
   rawSpeaker?: string
   /** 引用（T33 PR-A）：这一行是引用、并进了上一条消息时记下结构和原文。 */
   quote?: { name: string; text: string }
+  /** 内部标记：这一行的「名字：内容」是从发言人栏拆出来的（本身就是引用形状）。 */
+  stuffedFromSpeaker?: boolean
 }
 
 export type ExtractResult = {

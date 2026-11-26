@@ -309,6 +309,87 @@ describe("引用识别（系统提示 + 「名字：内容」）", () => {
   })
 })
 
+describe("飞书「回复」行（PR-A 补充）", () => {
+  it("「|回复 张珂：被引用的话 还有log」→ 仍是我的消息，正文是还有log，引用拆出来", () => {
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "张珂", text: "把工程和能高线跑的图发一下 还有log", side: "right" }),
+        t({ speaker: "我", text: "|回复 张珂：把工程和能高线的图发一下 还有log", side: "right" }),
+      ],
+      { myNicknames: ["张珂"], companyPrefixes: [] },
+    )
+    expect(out.repliesSplit).toBe(1)
+    expect(out.turns).toHaveLength(2)
+    expect(out.turns[1].speaker).toBe("我")
+    expect(out.turns[1].text).toContain("还有log")
+    expect(out.turns[1].quote).toEqual({ name: "张珂", text: "把工程和能高线跑的图发一下 还有log" })
+  })
+
+  it("「温天正：|回复 殷杰：被引用的话 实际回复」→ 仍是温天正的消息", () => {
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "殷杰", text: "被引用的话", side: "left" }),
+        t({ speaker: "温天正", text: "|回复 殷杰：被引用的话 实际回复", side: "left" }),
+      ],
+      settings,
+    )
+    expect(out.turns[1].speaker).toBe("温天正")
+    expect(out.turns[1].text).toContain("实际回复")
+    expect(out.turns[1].quote?.name).toBe("殷杰")
+    expect(out.turns[1].text).not.toContain("|回复")
+  })
+
+  it("拆不开时保留原样，quote 为空，并写进 uncertain", () => {
+    const out = resolveSpeakerTurns(
+      [t({ speaker: "我", text: "|回复 殷杰：完全对不上的一句话", side: "right" })],
+      settings,
+    )
+    expect(out.repliesUnsplit).toBe(1)
+    expect(out.turns[0].text).toContain("|回复 殷杰")
+    expect(out.turns[0].quote).toBeUndefined()
+    expect(out.uncertain.join("")).toContain("拆不出引用内容")
+  })
+
+  it("引用的正是我自己说过的话（出现在别人消息下面）→ 仍算引用", () => {
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "我", text: "这句话是我说的", side: "right" }),
+        t({ speaker: "客户甲", text: "|回复 我：这句话是我说的 好的", side: "left" }),
+      ],
+      { myNicknames: ["我"], companyPrefixes: [] },
+    )
+    expect(out.repliesSplit).toBe(1)
+    expect(out.turns[1].speaker).toBe("客户甲")
+    expect(out.turns[1].quote).toEqual({ name: "我", text: "这句话是我说的" })
+    expect(out.turns[1].text).toContain("好的")
+  })
+
+  it("「回复」不会被当成规则 ① 的名字", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "我", text: "|回复 客户甲：读码率低 明天看", side: "right" }),
+      ],
+      [],
+    )
+    expect(out.quotesByName).toBe(0)
+    expect(out.turns).toHaveLength(2)
+  })
+
+  it("塞进发言人栏的「名字：内容」按引用处理，不拆成普通消息", () => {
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "lily：你们软件能连续取两张吗", text: "", side: "left" }),
+      ],
+      { myNicknames: ["lily"], companyPrefixes: [] },
+    )
+    expect(out.quotesByName).toBe(1)
+    expect(out.turns).toHaveLength(1)
+    expect(out.turns[0].quote).toEqual({ name: "lily", text: "你们软件能连续取两张吗" })
+  })
+})
+
 describe("引用识别（PR-A 放宽：不看发言人是谁）", () => {
   it("发言人写成「我」，但内容是「客户名：…」→ 也算引用", () => {
     const out = mergeQuoteTurns(
@@ -438,7 +519,7 @@ describe("引用识别（PR-A 放宽：不看发言人是谁）", () => {
     expect(again.turns[0].text).toContain("（引用 客户甲：再发一下日志）")
   })
 
-  it("「内容塞进发言人、正文为空」的坏行先拆开再判（R079 lily 那行）", () => {
+  it("「内容塞进发言人、正文为空」且前面没有消息时，拆开后当普通消息（没地方并）", () => {
     const out = resolveSpeakerTurns([t({ speaker: "lily：你们软件能连续取两张吗", text: "", side: "left" })], {
       myNicknames: ["lily"],
       companyPrefixes: [],
