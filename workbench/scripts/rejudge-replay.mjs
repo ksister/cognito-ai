@@ -87,6 +87,8 @@ let scanned = 0
 let changed = 0
 let skipped = 0
 let quoteTotal = 0
+let replyTotal = 0
+let unsplitTotal = 0
 
 for (const dirName of fs.readdirSync(resultsRoot)) {
   const dir = path.join(resultsRoot, dirName)
@@ -113,7 +115,8 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       ...(t.side ? { side: t.side } : {}),
     }))
     const titleNames = namesFromWindowTitle(windowTitleFor(run))
-    const { turns: resolved, uncertain: speakerNotes, quotes } = resolveSpeakerTurns(input, settings, titleNames)
+    const { turns: resolved, uncertain: speakerNotes, quotes, quotesByName, quotesByDup, repliesSplit, repliesUnsplit } =
+      resolveSpeakerTurns(input, settings, titleNames)
     const after = countSpeakers(resolved)
     const same =
       before.me === after.me &&
@@ -122,11 +125,14 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       before.unknown === after.unknown
     if (!same) changed++
     if (quotes) quoteTotal += quotes
+    replyTotal += repliesSplit
+    unsplitTotal += repliesUnsplit
     console.log(
       `${run.r} ${run.transcriptPromptVersion ?? "-"} ${run.runId}: ` +
         `我 ${before.me}→${after.me} 同事 ${before.colleague}→${after.colleague} ` +
         `客户 ${before.customer}→${after.customer} 未知 ${before.unknown}→${after.unknown}` +
-        (quotes ? ` 引用 ${quotes}` : "") +
+        ` 引用 ${quotes}（名字:内容 ${quotesByName} / 重复 ${quotesByDup} / 飞书回复 ${repliesSplit}` +
+        `${repliesUnsplit ? ` / 拆不出 ${repliesUnsplit}` : ""}）` +
         `${same ? "" : " *"}`,
     )
     if (!apply) continue
@@ -139,6 +145,7 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       text: t.text,
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
+      ...(t.quote ? { quote: t.quote } : {}),
     }))
     run.transcript = formatScreenshotChat(resolved)
     run.uncertain = nextUncertain
@@ -147,6 +154,7 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
 }
 
 console.log(
-  `\n共扫描 ${scanned} 次运行；计数有变化 ${changed} 次；跳过 ${skipped} 次；识别引用 ${quoteTotal} 行。` +
+  `\n共扫描 ${scanned} 次运行；计数有变化 ${changed} 次；跳过 ${skipped} 次；` +
+    `并入上一条的引用 ${quoteTotal} 行；飞书回复拆出引用 ${replyTotal} 行（拆不出 ${unsplitTotal} 行）。` +
     (apply ? "已写回。" : "（dry-run，没有写文件；加 --apply 才写）"),
 )

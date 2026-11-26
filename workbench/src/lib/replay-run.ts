@@ -533,6 +533,7 @@ export async function runRetranscribe({
       text: t.text,
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
+      ...(t.quote ? { quote: t.quote } : {}),
     })),
     fields: fillContextFields(draftToFields(fieldsResult.draft, schema), detail),
     uncertain: mergeUncertain(speakerUncertain, fieldsResult.draft.uncertain ?? []),

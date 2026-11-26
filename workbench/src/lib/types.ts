@@ -126,6 +126,10 @@ export type TranscriptTurn = {
   side?: "left" | "right"
   /** 模型在截图里看到的原始发言人（重判/排查用；不参与显示）。 */
   rawSpeaker?: string
+  /** 引用（T33 PR-A）：这一行是引用、并进了上一条消息时记下结构和原文。 */
+  quote?: { name: string; text: string; source?: "name" | "dup" | "reply" }
+  /** 内部标记：这一行的「名字：内容」是从发言人栏拆出来的（本身就是引用形状）。 */
+  stuffedFromSpeaker?: boolean
 }
 
 export type ExtractResult = {
