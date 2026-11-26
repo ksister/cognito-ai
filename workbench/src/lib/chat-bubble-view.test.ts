@@ -83,6 +83,27 @@ describe("buildBubbleItems", () => {
     expect(items[0].markedTypes).toEqual(["unquote"])
     expect(summarizeBubbles(items).unquoteMarked).toBe(1)
   })
+
+  it("气泡里不显示拼在正文里的「（引用 …）」，引用单独一行；名字用截图原始名字", () => {
+    const items = buildBubbleItems([
+      t({ speaker: "客户", text: "主要是考虑拼接完的效果", rawSpeaker: "魏笑凡" }),
+      t({
+        speaker: "我",
+        text: "收到（引用 客户：主要是考虑拼接完的效果）",
+        quote: { name: "客户", text: "主要是考虑拼接完的效果" },
+      }),
+    ])
+    expect(items[1].displayText).toBe("收到")
+    expect(items[0].quote).toBeNull()
+    expect(items[1].quoteDisplayName).toBe("魏笑凡")
+  })
+
+  it("引用名字本来就是真名时原样显示", () => {
+    const items = buildBubbleItems([
+      t({ speaker: "我", text: "好（引用 张珂：明天给你）", quote: { name: "张珂", text: "明天给你" } }),
+    ])
+    expect(items[0].quoteDisplayName).toBe("张珂")
+  })
 })
 
 describe("summarizeBubbles", () => {

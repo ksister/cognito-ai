@@ -104,6 +104,15 @@ const MARK_LABEL: Record<"speaker" | "text" | "extra" | "quote" | "unquote", str
   unquote: "不是引用",
 }
 
+/** 页面视图：核对转写（截图+转写各一半）/ 核对字段（转写 1/3 + 字段 2/3）/ 全部（三列）。 */
+type PageView = "transcript" | "fields" | "all"
+const PAGE_VIEW_KEY = "ae-replay-page-view"
+const PAGE_VIEW_LABEL: Record<PageView, string> = {
+  transcript: "核对转写",
+  fields: "核对字段",
+  all: "全部",
+}
+
 const STATUS_STYLE: Record<ReplayStatus, string> = {
   untested: "bg-zinc-100 text-zinc-600 border-zinc-200",
   tested: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -207,6 +216,16 @@ export function ReplayCompare({
   )
   const [textErrNote, setTextErrNote] = useState(() => runs[0]?.review?.textErrorNote ?? "")
   const [viewMode, setViewMode] = useState<"bubble" | "text">("bubble")
+  const [pageView, setPageView] = useState<PageView>(() => {
+    // 记住用户上次的选择；隐私模式/禁用 localStorage 时退回默认（核对转写）。
+    try {
+      const saved = typeof window !== "undefined" ? window.localStorage.getItem(PAGE_VIEW_KEY) : null
+      if (saved === "transcript" || saved === "fields" || saved === "all") return saved
+    } catch {
+      /* 读不到就用默认 */
+    }
+    return "transcript"
+  })
   const [marks, setMarks] = useState<ReplayLineMark[]>(() => runs[0]?.review?.lineMarks ?? [])
   const [editingLine, setEditingLine] = useState<number | null>(null)
   const [editSpeaker, setEditSpeaker] = useState("我")
@@ -239,6 +258,15 @@ export function ReplayCompare({
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [zoom])
+
+  // 记住用户上次选的页面视图（localStorage 写失败也不影响使用）。
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PAGE_VIEW_KEY, pageView)
+    } catch {
+      /* 写不进去就算了，下次还是默认 */
+    }
+  }, [pageView])
 
   const right = useMemo(() => selected?.fields ?? {}, [selected])
   const diffs = useMemo(() => compareReplayFields(left, right, keys), [left, right, keys])
@@ -413,13 +441,39 @@ export function ReplayCompare({
 
   return (
     <>
+      <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs">
+        <span className="text-muted-foreground">视图</span>
+        <span className="inline-flex overflow-hidden rounded-lg border">
+          {(["transcript", "fields", "all"] as PageView[]).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setPageView(v)}
+              className={cn(
+                "px-2.5 py-1",
+                pageView === v ? "bg-foreground text-background" : "bg-background hover:bg-muted",
+              )}
+            >
+              {PAGE_VIEW_LABEL[v]}
+            </button>
+          ))}
+        </span>
+        <span className="text-muted-foreground">
+          {pageView === "transcript"
+            ? "截图和转写各占一半，字段对比收起"
+            : pageView === "fields"
+              ? "转写 1/3、字段对比 2/3，截图收起"
+              : "三列都在：截图 | 转写 | 字段对比"}
+        </span>
+      </div>
       {/* 宽屏（≥1400px）三列：截图 1/4 | 转写 1/4 | 字段对比 1/2；不够宽时退回「截图 / 转写」切换 */}
-      <div className="replay-grid">
-        {/* 截图列：滚动固定、单独滚动；不确定项放在这一列下面 */}
+      <div className={cn("replay-grid", `replay-grid--${pageView}`)}>
+        {/* 截图列：滚动固定、单独滚动；不确定项放在这一列下面；「核对字段」视图里收起 */}
         <div
           className={cn(
             "replay-side space-y-2",
             pane === "transcript" && "replay-hide-narrow",
+            pageView === "fields" && "replay-hide-view",
           )}
         >
           <Card className="py-0">
@@ -495,11 +549,11 @@ export function ReplayCompare({
           )}
         </div>
 
-        {/* 转写列：宽屏独立一列、单独滚动；窄屏和截图列二选一 */}
+        {/* 转写列：宽屏独立一列、单独滚动；窄屏和截图列二选一（「核对字段」视图里截图收起，转写照常显示） */}
         <div
           className={cn(
             "replay-side space-y-2",
-            pane === "shots" && "replay-hide-narrow",
+            pane === "shots" && pageView !== "fields" && "replay-hide-narrow",
           )}
         >
           <Card className="py-0">
@@ -512,9 +566,11 @@ export function ReplayCompare({
                 )}
               </span>
               <span className="text-muted-foreground replay-toggle">
-                <button type="button" onClick={() => setPane("shots")} className="hover:text-foreground">
-                  返回截图
-                </button>
+                {pageView !== "fields" && (
+                  <button type="button" onClick={() => setPane("shots")} className="hover:text-foreground">
+                    返回截图
+                  </button>
+                )}
               </span>
             </div>
 
@@ -807,8 +863,8 @@ export function ReplayCompare({
           </Card>
         </div>
 
-        {/* 字段对比：宽屏占一半 */}
-        <div className="space-y-3">
+        {/* 字段对比：宽屏占一半；「核对转写」视图里收起 */}
+        <div className={cn("space-y-3", pageView === "transcript" && "replay-hide-view")}>
           <Card className="py-3">
             <CardContent className="space-y-3 px-4">
               <div className="flex flex-wrap items-center gap-2 text-sm">

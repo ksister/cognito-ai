@@ -48,7 +48,9 @@ function BubbleBody({ item }: { item: BubbleItem }) {
 
 function QuoteLine({ item, onClick }: { item: BubbleItem; onClick?: (item: BubbleItem) => void }) {
   if (!item.quote && !item.replyUnsplit) return null
-  const label = item.quote ? `引用 ${item.quote.name}：${item.quote.text}` : "回复：拆不出引用的原文"
+  const label = item.quote
+    ? `引用 ${item.quoteDisplayName || item.quote.name}：${item.quote.text}`
+    : "回复：拆不出引用的原文"
   const missing = (item.quote && !item.quoteVerified) || item.replyUnsplit
   const reason = item.replyUnsplit ? "回复拆不出引用" : "引用找不到原话"
   return (

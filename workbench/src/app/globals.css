@@ -184,3 +184,32 @@ main:has([data-wide]) > div {
     display: none;
   }
 }
+
+/* 页面视图（T27 PR-B 补充）：
+ *  - 核对转写：截图 | 转写 各一半（字段对比 display:none）
+ *  - 核对字段：转写 | 字段对比（截图 display:none）
+ *  - 全部：截图 | 转写 | 字段对比（原来的三列）
+ */
+.replay-hide-view {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .replay-grid--transcript {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .replay-grid--fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  }
+}
+
+@media (min-width: 1400px) {
+  .replay-grid--transcript {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .replay-grid--fields {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  }
+}

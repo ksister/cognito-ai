@@ -17,6 +17,8 @@ export type BubbleItem = {
   text: string
   kind: "speech" | "time"
   quote: { name: string; text: string; source?: "name" | "dup" | "reply" } | null
+  /** 引用是谁说的：优先截图上的原始名字，没有才用「客户」「我」这类角色名。 */
+  quoteDisplayName: string
   /** 引用的内容能在前面找到原话吗（找不到 = 待核对） */
   quoteVerified: boolean
   /** 飞书「回复」行但拆不出引用内容（待核对） */
@@ -38,6 +40,8 @@ export type BubbleInputTurn = {
   text: string
   kind?: "speech" | "time"
   quote?: { name: string; text: string; source?: "name" | "dup" | "reply" }
+  /** 模型在截图里看到的原始发言人（引用显示名字时优先用它）。 */
+  rawSpeaker?: string
 }
 
 export type BubbleInputMark = {
@@ -50,6 +54,32 @@ export type BubbleInputMark = {
 }
 
 const REPLY_LINE = /^[\s|｜]*回复\s*[^：:\n]{1,20}[：:]/
+
+/** 角色名/泛称：不是「截图上的原始名字」。 */
+const ROLE_NAMES = ["我", "客户", "我方同事", "对方", "未知", "系统", ""]
+
+/** 转写正文里拼在末尾的引用段：「（引用 名字：内容）」。 */
+const CITATION_SUFFIX = /\s*（引用\s[^：:\n]{1,40}：[\s\S]*）\s*$/
+
+/** 气泡里不显示拼接的「（引用 …）」段，引用单独显示在气泡下面。 */
+function stripCitation(text: string): string {
+  return String(text ?? "").replace(CITATION_SUFFIX, "").trim() || String(text ?? "").trim()
+}
+
+/** 引用是谁：优先前面那条原话的截图原始名字（不是那种才用「客户」这类角色名）。 */
+function resolveQuoteDisplayName(
+  quote: { name: string; text: string },
+  earlier: { text: string; rawSpeaker: string }[],
+): string {
+  const raw = String(quote.name ?? "").trim()
+  if (raw && !ROLE_NAMES.includes(raw)) return raw
+  for (const t of earlier) {
+    const name = String(t.rawSpeaker ?? "").trim()
+    if (!name || ROLE_NAMES.includes(name)) continue
+    if (similarText(t.text, quote.text) >= 0.9) return name
+  }
+  return raw
+}
 
 function normalizeForMatch(text: string): string {
   return String(text ?? "")
@@ -96,7 +126,7 @@ export function buildBubbleItems(turns: BubbleInputTurn[], marks: BubbleInputMar
     list.push(m)
     byLine.set(m.line, list)
   }
-  const earlier: string[] = []
+  const earlier: { text: string; rawSpeaker: string }[] = []
   const items: BubbleItem[] = []
   let line = 0
   for (const turn of turns) {
@@ -108,6 +138,7 @@ export function buildBubbleItems(turns: BubbleInputTurn[], marks: BubbleInputMar
         text: turn.text,
         kind: "time",
         quote: null,
+        quoteDisplayName: "",
         quoteVerified: true,
         replyUnsplit: false,
         markedTypes: [],
@@ -135,9 +166,12 @@ export function buildBubbleItems(turns: BubbleInputTurn[], marks: BubbleInputMar
             ? "system"
             : "other"
     const quote = turn.quote ?? null
-    const quoteVerified = quote ? quoteFoundInEarlier(earlier, quote.text) : true
+    const quoteVerified = quote ? quoteFoundInEarlier(earlier.map((e) => e.text), quote.text) : true
+    const quoteDisplayName = quote
+      ? resolveQuoteDisplayName(quote, earlier.map((e) => ({ text: e.text, rawSpeaker: e.rawSpeaker })))
+      : ""
     const replyUnsplit = !quote && REPLY_LINE.test(String(turn.text ?? ""))
-    earlier.push(turn.text)
+    earlier.push({ text: turn.text, rawSpeaker: turn.rawSpeaker ?? turn.speaker })
     items.push({
       line,
       variant,
@@ -145,12 +179,14 @@ export function buildBubbleItems(turns: BubbleInputTurn[], marks: BubbleInputMar
       text: turn.text,
       kind: "speech",
       quote,
+      quoteDisplayName,
       quoteVerified,
       replyUnsplit,
       markedTypes: [...new Set(list.map((m) => m.type))],
       staleMarkCount,
       displaySpeaker: speakerMark?.newSpeaker ?? turn.speaker,
-      displayText: textMark?.newText ?? turn.text,
+      // 气泡里不显示正文里拼的「（引用 …）」（引用单独一行灰字）；纯文本视图仍用 turn.text。
+      displayText: textMark?.newText != null ? stripCitation(textMark.newText) : stripCitation(turn.text),
       originalSpeaker: turn.speaker,
       originalText: turn.text,
     })
