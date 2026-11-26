@@ -97,6 +97,9 @@ export async function saveRunReview({
   reviewed,
   speakerError,
   speakerErrorCount,
+  textError,
+  textErrorCount,
+  textErrorNote,
   at = new Date(),
 }: {
   kbDir: string
@@ -106,8 +109,14 @@ export async function saveRunReview({
   reviewed: boolean
   /** 记录级：发言人有误（可选，不传就保持原来的值）。 */
   speakerError?: boolean
-  /** 记录级：错了几条（可选）。 */
+  /** 记录级：发言人错了几条（可选）。 */
   speakerErrorCount?: number
+  /** 记录级：文字有误（可选）。 */
+  textError?: boolean
+  /** 记录级：文字错了几处（可选）。 */
+  textErrorCount?: number
+  /** 记录级：文字错误的备注（可选，不传就保留原来的）。 */
+  textErrorNote?: string
   at?: Date
 }): Promise<{ ok: true; run: ReplayRun } | { ok: false; error: string }> {
   // 接口层已经挡过一次，这里再挡一次：这层是拼路径的最后一关。
@@ -120,10 +129,17 @@ export async function saveRunReview({
   const nextSpeakerError = speakerError === undefined ? Boolean(run.review?.speakerError) : speakerError
   const rawCount = speakerErrorCount === undefined ? (run.review?.speakerErrorCount ?? 0) : speakerErrorCount
   const count = Number.isFinite(rawCount) ? Math.max(0, Math.min(9999, Math.round(rawCount))) : 0
+  const nextTextError = textError === undefined ? Boolean(run.review?.textError) : textError
+  const rawTextCount = textErrorCount === undefined ? (run.review?.textErrorCount ?? 0) : textErrorCount
+  const textCount = Number.isFinite(rawTextCount) ? Math.max(0, Math.min(9999, Math.round(rawTextCount))) : 0
+  const note = textErrorNote === undefined ? (run.review?.textErrorNote ?? "") : String(textErrorNote).trim().slice(0, 2000)
   run.review = {
     fields: nextFields,
     ...(nextSpeakerError ? { speakerError: true } : {}),
     ...(count > 0 ? { speakerErrorCount: count } : {}),
+    ...(nextTextError ? { textError: true } : {}),
+    ...(textCount > 0 ? { textErrorCount: textCount } : {}),
+    ...(note ? { textErrorNote: note } : {}),
     reviewedAt: reviewed ? now : (run.review?.reviewedAt ?? null),
     updatedAt: now,
   }

@@ -189,6 +189,11 @@ export function ReplayCompare({
   const [speakerErrCount, setSpeakerErrCount] = useState(() =>
     runs[0]?.review?.speakerErrorCount ? String(runs[0].review.speakerErrorCount) : "",
   )
+  const [textError, setTextError] = useState(() => Boolean(runs[0]?.review?.textError))
+  const [textErrCount, setTextErrCount] = useState(() =>
+    runs[0]?.review?.textErrorCount ? String(runs[0].review.textErrorCount) : "",
+  )
+  const [textErrNote, setTextErrNote] = useState(() => runs[0]?.review?.textErrorNote ?? "")
 
   // 刷新页面后如果多了新结果（刚跑完），自动切到最新那次。
   const knownRuns = useRef<Set<string>>(new Set(runs.map((r) => r.runId)))
@@ -200,6 +205,11 @@ export function ReplayCompare({
     setSelectedId(fresh.runId)
     setEdits(editsFromRun(fresh))
     setLastSaved(JSON.stringify(editsFromRun(fresh)))
+    setSpeakerError(Boolean(fresh.review?.speakerError))
+    setSpeakerErrCount(fresh.review?.speakerErrorCount ? String(fresh.review.speakerErrorCount) : "")
+    setTextError(Boolean(fresh.review?.textError))
+    setTextErrCount(fresh.review?.textErrorCount ? String(fresh.review.textErrorCount) : "")
+    setTextErrNote(fresh.review?.textErrorNote ?? "")
     setSavedAt(null)
   }, [runs])
 
@@ -234,6 +244,9 @@ export function ReplayCompare({
     setLastSaved(JSON.stringify(nextEdits))
     setSpeakerError(Boolean(run?.review?.speakerError))
     setSpeakerErrCount(run?.review?.speakerErrorCount ? String(run.review.speakerErrorCount) : "")
+    setTextError(Boolean(run?.review?.textError))
+    setTextErrCount(run?.review?.textErrorCount ? String(run.review.textErrorCount) : "")
+    setTextErrNote(run?.review?.textErrorNote ?? "")
     setCompareRunId((cur) => (cur === runId ? "" : cur))
     setSavedAt(null)
     setError(null)
@@ -249,6 +262,7 @@ export function ReplayCompare({
     setError(null)
     try {
       const count = Number.parseInt(speakerErrCount, 10)
+      const textCount = Number.parseInt(textErrCount, 10)
       const res = await fetch("/api/replay/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -259,6 +273,9 @@ export function ReplayCompare({
           reviewed,
           speakerError,
           speakerErrorCount: Number.isFinite(count) && count > 0 ? count : 0,
+          textError,
+          textErrorCount: Number.isFinite(textCount) && textCount > 0 ? textCount : 0,
+          textErrorNote: textErrNote,
         }),
       })
       const data = (await res.json()) as { ok?: boolean; error?: string }
@@ -518,6 +535,14 @@ export function ReplayCompare({
                               另一版：{row.right.speaker || "未知"}
                             </span>
                           )}
+                          {row.nameVariant && row.right && (
+                            <span
+                              className="ml-1 text-[10px] text-muted-foreground"
+                              title={`另一版写成：${row.right.speaker}`}
+                            >
+                              名字写法不同
+                            </span>
+                          )}
                           {!row.right && <span className="ml-1 rounded bg-zinc-200 px-1 text-[10px]">另一版没有</span>}
                         </span>
                       </div>
@@ -681,6 +706,69 @@ export function ReplayCompare({
                   </span>
                 )}
                 <span className="text-muted-foreground">勾上并填条数后点「完成核对」保存</span>
+              </div>
+
+              {/* 记录级核对：文字（转写内容）对不对 */}
+              <div className="space-y-1.5 rounded-lg border bg-muted/30 px-2.5 py-1.5 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-1.5 font-medium">
+                    <input
+                      type="checkbox"
+                      checked={textError}
+                      onChange={(e) => {
+                        setTextError(e.target.checked)
+                        const count = Number.parseInt(textErrCount, 10)
+                        void fetch("/api/replay/review", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            recordId: record.recordId,
+                            runId: selected?.runId,
+                            fields: edits,
+                            reviewed: false,
+                            speakerError,
+                            speakerErrorCount: Number.isFinite(Number.parseInt(speakerErrCount, 10))
+                              ? Math.max(0, Number.parseInt(speakerErrCount, 10))
+                              : 0,
+                            textError: e.target.checked,
+                            textErrorCount: Number.isFinite(count) && count > 0 ? count : 0,
+                            textErrorNote: textErrNote,
+                          }),
+                        })
+                      }}
+                      className="size-3.5"
+                    />
+                    文字有误
+                  </label>
+                  <label className="inline-flex items-center gap-1 text-muted-foreground">
+                    错了几处
+                    <input
+                      type="number"
+                      min={0}
+                      max={9999}
+                      value={textErrCount}
+                      onChange={(e) => setTextErrCount(e.target.value)}
+                      onBlur={() => void save(false)}
+                      placeholder="0"
+                      className="h-6 w-16 rounded-md border bg-background px-1.5 text-right text-xs"
+                    />
+                  </label>
+                  {textError && (
+                    <span className="text-amber-700">
+                      这条记录会算「有问题」
+                      {Number.parseInt(textErrCount, 10) > 0 ? `，错 ${Number.parseInt(textErrCount, 10)} 处` : ""}
+                    </span>
+                  )}
+                </div>
+                <Textarea
+                  value={textErrNote}
+                  onChange={(e) => setTextErrNote(e.target.value)}
+                  onBlur={() => void save(false)}
+                  placeholder="备注（可留空）：原文和转写的对照，例如「闪退有哪天」被转成「闪退有哪」，漏了一个字"
+                  rows={2}
+                  className="min-h-9 bg-background text-xs"
+                  aria-label="文字错误备注"
+                />
               </div>
 
               {!record.fieldsComplete && (

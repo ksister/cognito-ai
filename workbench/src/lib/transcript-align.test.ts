@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { alignTranscripts, countSpeakerDiffs, normalizeForAlign, textSimilarity, type AlignTurn } from "./transcript-align"
+import {
+  alignTranscripts,
+  countSpeakerDiffs,
+  isNameVariant,
+  normalizeForAlign,
+  normalizeSpeakerForCompare,
+  sameSpeaker,
+  textSimilarity,
+  type AlignTurn,
+} from "./transcript-align"
 
 function t(speaker: string, text: string, kind: "speech" | "time" = "speech"): AlignTurn {
   return { speaker, text, kind }
@@ -18,6 +27,72 @@ describe("normalizeForAlign / textSimilarity", () => {
 
   it("文字有一点点出入也能对上", () => {
     expect(textSimilarity("这个问题明天去现场看一下", "这个问题明天去现场看看")).toBeGreaterThanOrEqual(0.6)
+  })
+})
+
+describe("发言人名字格式归一（避免误报发言人不同）", () => {
+  it("空格、分隔符、全角半角、括号不同都算同一个人", () => {
+    const variants = ["工作 宇创 张三", "工作-宇创-张三", "工作／宇创／张三", "【工作】宇创 张三", "工作　宇创　张三", "工作_宇创_张三"]
+    const base = normalizeSpeakerForCompare(variants[0])
+    for (const v of variants) expect(normalizeSpeakerForCompare(v)).toBe(base)
+  })
+
+  it("真不同的名字不会被当成一样", () => {
+    expect(normalizeSpeakerForCompare("张三")).not.toBe(normalizeSpeakerForCompare("李四"))
+    expect(normalizeSpeakerForCompare("我方同事")).not.toBe(normalizeSpeakerForCompare("张三"))
+  })
+
+  it("sameSpeaker 用归一后的名字比", () => {
+    expect(sameSpeaker(t("工作 宇创 张三", "a"), t("工作-宇创-张三", "a"))).toBe(true)
+    expect(sameSpeaker(t("工作 宇创 张三", "a"), t("工作 宇创 李四", "a"))).toBe(false)
+  })
+
+  it("对齐时同一名字的不同写法不算发言人不同（R060 的误报）", () => {
+    const rows = alignTranscripts(
+      [t("工作 宇创 张三", "闪退有哪天"), t("工作-宇创-张三", "今天下午")],
+      [t("工作-宇创-张三", "闪退有哪天"), t("工作 宇创 张三", "今天下午")],
+    )
+    expect(rows.every((r) => !r.speakerDiff)).toBe(true)
+  })
+})
+
+describe("名字只差一个字的写法（同一个人）", () => {
+  it("长度相同、都 ≥3 个字、只差 1 个字 → 算写法差异，不标黄", () => {
+    const rows = alignTranscripts([t("工作 宇创 张三", "闪退有哪天")], [t("工作 宇创 张山", "闪退有哪天")])
+    expect(rows[0].nameVariant).toBe(true)
+    expect(rows[0].speakerDiff).toBe(false)
+    expect(countSpeakerDiffs(rows)).toBe(0)
+  })
+
+  it("两个字的名字不合并（张三 / 张山）", () => {
+    const rows = alignTranscripts([t("张三", "好")], [t("张山", "好")])
+    expect(rows[0].nameVariant).toBe(false)
+    expect(rows[0].speakerDiff).toBe(true)
+  })
+
+  it("四个字的名字差 1 个字算写法差异，差 2 个字不算", () => {
+    expect(alignTranscripts([t("宇创张三", "好")], [t("宇创张山", "好")])[0].nameVariant).toBe(true)
+    const twoOff = alignTranscripts([t("宇创张三", "好")], [t("字创张山", "好")])
+    expect(twoOff[0].nameVariant).toBe(false)
+    expect(twoOff[0].speakerDiff).toBe(true)
+  })
+
+  it("长度不同不算", () => {
+    expect(alignTranscripts([t("宇创张三", "好")], [t("宇创张三丰", "好")])[0].nameVariant).toBe(false)
+  })
+
+  it("isNameVariant 只认归一后长度 ≥3 且差 1 个字", () => {
+    expect(isNameVariant(t("张三", "a"), t("张山", "a"))).toBe(false)
+    expect(isNameVariant(t("宇创张三", "a"), t("宇创张山", "a"))).toBe(true)
+    expect(isNameVariant(t("宇创张三", "a"), t("宇创张三", "a"))).toBe(false)
+    expect(isNameVariant(t("", "a"), t("张山", "a"))).toBe(false)
+  })
+
+  it("写法差异不算「发言人不同」，但仍是单独的一行（文字相同）", () => {
+    const rows = alignTranscripts([t("工作 宇创 张三", "好")], [t("工作 宇创 张山", "好")])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].textDiff).toBe(false)
+    expect(rows[0].nameVariant).toBe(true)
   })
 })
 

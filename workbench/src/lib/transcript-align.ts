@@ -23,6 +23,11 @@ export type AlignedRow = {
   right: AlignTurn | null
   /** 两边都有这一句，但发言人不一样（时间分隔行不参与比较）。 */
   speakerDiff: boolean
+  /**
+   * 发言人「看起来是同一个人、只是写法差一个字」：长度相同、都不少于 3 个字、只差 1 个字。
+   * 这种情况不算 `speakerDiff`，页面只标一行灰字「名字写法不同」。
+   */
+  nameVariant: boolean
   /** 两边都有这一句，但文字不完全一样（归一化后不同）。 */
   textDiff: boolean
 }
@@ -39,9 +44,54 @@ function isTimeLine(turn: AlignTurn): boolean {
   return turn.kind === "time"
 }
 
-/** 发言人比较用的归一化（「我方同事」和具体名字不算同一个人，所以原样比）。 */
+/**
+ * 发言人名字的比较形状：全角半角统一、去掉空格和分隔符号、去掉括号码。
+ * 「工作 宇创 张三」「工作-宇创-张三」「工作／宇创／张三」「【工作】宇创 张三」都算同一个人。
+ * 只用于**比较**，显示仍是原文。
+ */
+export function normalizeSpeakerForCompare(name: string): string {
+  return String(name ?? "")
+    .normalize("NFKC")
+    .replace(/[\s\u3000]+/g, "")
+    .replace(/[《》〈〉【】\[\]（）()「」『』{}]/g, "")
+    .replace(/[-_·•・|｜/／\\、，,；;:：.。+＋&＆~～]+/g, "")
+    .toLowerCase()
+}
+
+/** 发言人比较：先统一格式再比（同一名字的不同写法不算「发言人不同」）。 */
 export function sameSpeaker(a: AlignTurn, b: AlignTurn): boolean {
-  return String(a.speaker ?? "").trim() === String(b.speaker ?? "").trim()
+  return normalizeSpeakerForCompare(a.speaker) === normalizeSpeakerForCompare(b.speaker)
+}
+
+/** 编辑距离（只用来判断「差一个字」）。 */
+export function editDistance(a: string, b: string): number {
+  const n = a.length
+  const m = b.length
+  if (!n) return m
+  if (!m) return n
+  let prev = Array.from({ length: m + 1 }, (_, j) => j)
+  for (let i = 1; i <= n; i++) {
+    const cur = new Array<number>(m + 1).fill(0)
+    cur[0] = i
+    for (let j = 1; j <= m; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return prev[m]
+}
+
+/**
+ * 两个名字是不是「同一个人、只差一个写法」：
+ * 归一后长度相同、都 ≥3 个字、编辑距离正好 1（例如「宇创 张三」被认成「字创 张三」）。
+ * 两个字的名字不合并（张三/张山 这种太容易撞）。
+ */
+export function isNameVariant(a: AlignTurn, b: AlignTurn): boolean {
+  const x = normalizeSpeakerForCompare(a.speaker)
+  const y = normalizeSpeakerForCompare(b.speaker)
+  if (!x || !y || x === y) return false
+  if (x.length !== y.length || x.length < 3) return false
+  return editDistance(x, y) === 1
 }
 
 /**
@@ -176,13 +226,11 @@ export function alignTranscripts(left: AlignTurn[], right: AlignTurn[]): Aligned
 }
 
 function makeRow(left: AlignTurn | null, right: AlignTurn | null): AlignedRow {
-  const textDiff = Boolean(
-    left && right && normalizeForAlign(left.text) !== normalizeForAlign(right.text),
-  )
-  const speakerDiff = Boolean(
-    left && right && !isTimeLine(left) && !isTimeLine(right) && !sameSpeaker(left, right),
-  )
-  return { left, right, speakerDiff, textDiff }
+  const textDiff = Boolean(left && right && normalizeForAlign(left.text) !== normalizeForAlign(right.text))
+  const comparable = Boolean(left && right && !isTimeLine(left!) && !isTimeLine(right!))
+  const nameVariant = Boolean(comparable && !sameSpeaker(left!, right!) && isNameVariant(left!, right!))
+  const speakerDiff = Boolean(comparable && !sameSpeaker(left!, right!) && !nameVariant)
+  return { left, right, speakerDiff, nameVariant, textDiff }
 }
 
 /** 统计「发言人不同」的行数（页面汇总用）。 */
