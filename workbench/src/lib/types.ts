@@ -124,6 +124,8 @@ export type TranscriptTurn = {
   kind?: "speech" | "time"
   /** 气泡在左还是右（T27 发言人判断用；老转写没有这个字段）。 */
   side?: "left" | "right"
+  /** 模型在截图里看到的原始发言人（重判/排查用；不参与显示）。 */
+  rawSpeaker?: string
 }
 
 export type ExtractResult = {

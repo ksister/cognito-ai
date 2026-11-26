@@ -22,6 +22,7 @@ import {
   QWEN3_VL_PLUS_MAX_OUTPUT_TOKENS,
   TRUNCATED_VL_MESSAGE,
   errorIfTruncated,
+  mergeInOrder,
   normalizeVlDraft,
   resolveVlMaxTokens,
   resolveVlTimeoutMs,
@@ -77,6 +78,42 @@ describe("VL transcript", () => {
     expect(draft.problem).toBe(FIXTURE.problem)
     expect(draft.uncertain).toEqual(["是否所有相机都偏", "有发言未能识别发言人，已标为「未知」"])
     expect(draft.title).toBe("极耳定位偏移")
+  })
+
+  it("主流程合并截图时也会把引用并进上一条（T33，和回放共用规则）", () => {
+    const { turns } = mergeInOrder(
+      [
+        {
+          turns: [
+            { speaker: "张工", text: "极耳定位偏了约 0.3mm" },
+            { speaker: "系统提示", text: "张工：之前说的那个版本也不行" },
+          ],
+          windowTitle: "",
+        },
+      ],
+      [],
+      [],
+    )
+    expect(turns).toHaveLength(1)
+    expect(turns[0].text).toBe("极耳定位偏了约 0.3mm（引用 张工：之前说的那个版本也不行）")
+  })
+
+  it("单聊里引用对方的话：窗口标题里的人名算「见过」（T33）", () => {
+    const { turns } = mergeInOrder(
+      [
+        {
+          turns: [
+            { speaker: "客户", text: "这个版本什么时候能好" },
+            { speaker: "系统提示", text: "魏笑凡：上周说的那个补丁不管用" },
+          ],
+          windowTitle: "工作 宇创 魏笑凡",
+        },
+      ],
+      [],
+      [],
+    )
+    expect(turns).toHaveLength(1)
+    expect(turns[0].text).toContain("（引用 魏笑凡：上周说的那个补丁不管用）")
   })
 
   it("accepts 发言人/内容 objects and plain lines", () => {

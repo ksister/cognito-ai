@@ -13,7 +13,7 @@
  */
 import fs from "node:fs"
 import path from "node:path"
-import { resolveSpeakerTurns } from "../src/lib/speaker-resolve.ts"
+import { namesFromWindowTitle, resolveSpeakerTurns } from "../src/lib/speaker-resolve.ts"
 import { formatScreenshotChat } from "../src/lib/transcript.ts"
 import { writeJsonAtomic } from "../src/lib/replay-store.ts"
 
@@ -61,10 +61,32 @@ const settings = {
   companyPrefixes: Array.isArray(settingsRaw.companyPrefixes) ? settingsRaw.companyPrefixes : [],
 }
 const resultsRoot = path.join(kb, "replay", "results")
+const snapshotRoot = path.join(kb, "replay", "snapshot")
+
+/**
+ * 这次运行的聊天窗口标题：优先用结果文件里存的 windowTitle；
+ * 老结果没存，就退回快照里同一张截图的转写缓存（那里有 windowTitle），取第一个非空的。
+ */
+function windowTitleFor(run) {
+  if (run.windowTitle) return run.windowTitle
+  try {
+    const detailPath = path.join(snapshotRoot, "records", `${run.r}.json`)
+    const detail = JSON.parse(fs.readFileSync(detailPath, "utf8"))
+    for (const shot of detail.shots ?? []) {
+      if (!shot?.transcript) continue
+      try {
+        const t = JSON.parse(fs.readFileSync(path.join(snapshotRoot, shot.transcript), "utf8"))
+        if (typeof t.windowTitle === "string" && t.windowTitle) return t.windowTitle
+      } catch {}
+    }
+  } catch {}
+  return ""
+}
 
 let scanned = 0
 let changed = 0
 let skipped = 0
+let quoteTotal = 0
 
 for (const dirName of fs.readdirSync(resultsRoot)) {
   const dir = path.join(resultsRoot, dirName)
@@ -90,7 +112,8 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
     }))
-    const { turns: resolved, uncertain: speakerNotes } = resolveSpeakerTurns(input, settings)
+    const titleNames = namesFromWindowTitle(windowTitleFor(run))
+    const { turns: resolved, uncertain: speakerNotes, quotes } = resolveSpeakerTurns(input, settings, titleNames)
     const after = countSpeakers(resolved)
     const same =
       before.me === after.me &&
@@ -98,18 +121,24 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       before.customer === after.customer &&
       before.unknown === after.unknown
     if (!same) changed++
+    if (quotes) quoteTotal += quotes
     console.log(
       `${run.r} ${run.transcriptPromptVersion ?? "-"} ${run.runId}: ` +
         `我 ${before.me}→${after.me} 同事 ${before.colleague}→${after.colleague} ` +
-        `客户 ${before.customer}→${after.customer} 未知 ${before.unknown}→${after.unknown}${same ? "" : " *"}`,
+        `客户 ${before.customer}→${after.customer} 未知 ${before.unknown}→${after.unknown}` +
+        (quotes ? ` 引用 ${quotes}` : "") +
+        `${same ? "" : " *"}`,
     )
     if (!apply) continue
     const kept = (run.uncertain ?? []).filter((n) => !SPEAKER_NOTE.test(String(n)))
     const nextUncertain = [...kept, ...speakerNotes]
-    run.turns = run.turns.map((t, i) => ({
-      ...t,
-      speaker: resolved[i].speaker,
-      ...(resolved[i].side ? { side: resolved[i].side } : {}),
+    // 引用行会并进上一条，行数可能变少：按重判后的 turns 重建，rawSpeaker 用重判时记下的原始名字。
+    run.turns = resolved.map((t) => ({
+      speaker: t.speaker,
+      rawSpeaker: t.rawSpeaker ?? "",
+      text: t.text,
+      kind: t.kind === "time" ? "time" : "speech",
+      ...(t.side ? { side: t.side } : {}),
     }))
     run.transcript = formatScreenshotChat(resolved)
     run.uncertain = nextUncertain
@@ -118,6 +147,6 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
 }
 
 console.log(
-  `\n共扫描 ${scanned} 次运行；计数有变化 ${changed} 次；跳过 ${skipped} 次。` +
+  `\n共扫描 ${scanned} 次运行；计数有变化 ${changed} 次；跳过 ${skipped} 次；识别引用 ${quoteTotal} 行。` +
     (apply ? "已写回。" : "（dry-run，没有写文件；加 --apply 才写）"),
 )
