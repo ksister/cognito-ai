@@ -1,4 +1,10 @@
-import { cleanWindowTitle, formatScreenshotChat, normalizeSpeakerName, type TranscriptTurn } from "./transcript.ts"
+import {
+  cleanWindowTitle,
+  formatScreenshotChat,
+  normalizeSpeakerName,
+  splitSpeakerContentTurn,
+  type TranscriptTurn,
+} from "./transcript.ts"
 import { normalizeSpeakerForCompare } from "./transcript-align.ts"
 
 /**
@@ -40,6 +46,17 @@ export function isSystemHintSpeaker(name: string): boolean {
 }
 
 const QUOTE_LINE = /^([^：:\n]{1,40})[：:]\s*([\s\S]+)$/
+/** 名字里不该出现的句子标点（出现就说明冒号前是一句话，不是「名字：内容」）。 */
+const NAME_BAD_CHARS = /[。！？；，、,.!?;]/
+
+/**
+ * 只看「还没拼过引用的正文」：已经并过引用的消息，正文里有「（引用 名字：内容）」，
+ * 再拿去判断会把「（引用 名字」当成新的「名字」重复合并，所以先截掉。
+ */
+function textHead(text: string): string {
+  const i = String(text ?? "").indexOf("（引用 ")
+  return i >= 0 ? String(text).slice(0, i) : String(text ?? "")
+}
 
 /** 窗口标题里不能当名字的常见词。 */
 const TITLE_STOP_WORDS = ["技术支持", "客服", "支持", "群聊", "私聊", "工作", "生活", "客户", "对方", "聊天"]
@@ -83,19 +100,30 @@ function quoteNameSeen(known: Set<string>, quotedName: string): boolean {
 }
 
 /**
- * 引用识别：把「系统提示」+「名字：内容」的行并进它前面那条消息。
+ * 引用识别（PR-A 放宽）：不管一行标的发言人是谁，满足任一条件就当作引用、并进它上一条消息：
+ *  ① 内容是「见过的名字：内容」（见过的名字 = 发言人真名 / 我的昵称 / 窗口标题里的人名，按后缀匹配）；
+ *  ② 内容和前面某条消息几乎相同：归一后长度 ≥ {@link DUP_QUOTE_MIN_LEN} 个字、相似度 ≥ {@link DUP_QUOTE_SIM}。
  *
- * 只有这个名字在本条聊天里出现过（真名发言人，或 extraNames 里的我的昵称）才算引用；
- * 名字没见过的保留原样（可能是模型把别的东西错标成系统提示，交给人工判断）。
+ * ② 的取舍理由：R079 / R161 的实测里，自然重复的消息（「好的」「收到」「OK」）都在 5 个字以内，
+ * 而用户指出的「和前面完全重复」的引用行是 20 个字以上的整句；所以用 12 个字当门槛，
+ * 把短消息的自然重复排除掉。真的把同一句长话发两遍时也会被当成引用（无法从文本区分），
+ * 这类情况会在 uncertain 里注明，PR-B 的气泡界面可以逐条改回来。
  *
- * 返回的 turns 已经不含引用行，`quotes` 是识别出的条数。
+ * 跨截图交界处同样适用：这里处理的是已经按顺序拼好的整段 turns。
+ * 合并的行会写 `turn.quote = { name, text }`，正文仍拼成「（引用 名字：内容）」。
+ *
+ * 返回的 turns 已经不含引用行。
  */
 export function mergeQuoteTurns(
   turns: TranscriptTurn[],
   extraNames: string[] = [],
-): { turns: TranscriptTurn[]; quotes: number } {
+): { turns: TranscriptTurn[]; quotes: number; quotesByName: number; quotesByDup: number } {
+  // 先修一种坏形状：模型把「名字：内容」整个塞进发言人、正文是空的（R079 里 lily 那行就是这样，
+  // 导致「lily」明明在昵称里却没被认成我）。拆开发言人和正文再判断。
+  const normalized = turns.map((t) => splitSpeakerContent(t))
+
   const known = new Set<string>()
-  for (const t of turns) {
+  for (const t of normalized) {
     if (t.kind === "time" || isSystemHintSpeaker(t.speaker)) continue
     const n = normalizeSpeakerForCompare(t.speaker)
     if (n && !isGenericSpeaker(t.speaker)) known.add(n)
@@ -107,31 +135,105 @@ export function mergeQuoteTurns(
 
   const out: TranscriptTurn[] = []
   let quotes = 0
-  for (const turn of turns) {
-    if (turn.kind !== "time" && isSystemHintSpeaker(turn.speaker)) {
-      const m = turn.text.match(QUOTE_LINE)
-      const quotedName = m?.[1]?.trim() ?? ""
-      const quotedText = m?.[2]?.trim() ?? ""
-      const matched = quotedName && quoteNameSeen(known, quotedName)
-      // 往前找最近的一条发言（跳过时间分隔行）
-      let prev = -1
-      for (let i = out.length - 1; i >= 0; i--) {
-        if (out[i].kind !== "time") {
-          prev = i
-          break
-        }
-      }
-      if (matched && quotedText && prev >= 0) {
-        const base = out[prev]
-        const extra = `（引用 ${quotedName}：${quotedText}）`
-        out[prev] = { ...base, text: base.text ? `${base.text}${extra}` : extra }
-        quotes++
-        continue
-      }
+  let quotesByName = 0
+  let quotesByDup = 0
+
+  const appendQuote = (baseIdx: number, quote: { name: string; text: string }) => {
+    const base = out[baseIdx]
+    const form = base.text ? `${base.text}（引用 ${quote.name}：${quote.text}）` : `（引用 ${quote.name}：${quote.text}）`
+    out[baseIdx] = { ...base, text: form, quote }
+  }
+  const lastBase = (): number => {
+    for (let i = out.length - 1; i >= 0; i--) if (out[i].kind !== "time") return i
+    return -1
+  }
+
+  for (let index = 0; index < normalized.length; index++) {
+    const turn = normalized[index]
+    if (turn.kind === "time") {
+      out.push(turn)
+      continue
     }
+    const prev = lastBase()
+
+    // ① 「见过的名字：内容」
+    const head = textHead(turn.text)
+    const m = head.match(QUOTE_LINE)
+    const quotedName = m?.[1]?.trim() ?? ""
+    const quotedText = m?.[2]?.trim() ?? ""
+    const nameLooksLikeName = Boolean(quotedName) && quotedName.length <= 20 && !NAME_BAD_CHARS.test(quotedName)
+    if (prev >= 0 && m && quotedText && nameLooksLikeName && quoteNameSeen(known, quotedName)) {
+      appendQuote(prev, { name: quotedName, text: quotedText })
+      quotes++
+      quotesByName++
+      continue
+    }
+
+    // ② 和前面某条消息几乎相同（长句才算）
+    const dupSource = prev >= 0 ? findNearDuplicate(normalized, index) : -1
+    if (dupSource >= 0) {
+      const source = normalized[dupSource]
+      appendQuote(prev, { name: source.speaker.trim() || UNKNOWN, text: source.text })
+      quotes++
+      quotesByDup++
+      continue
+    }
+
     out.push(turn)
   }
-  return { turns: out, quotes }
+
+  return { turns: out, quotes, quotesByName, quotesByDup }
+}
+
+/** 「和前面某条消息几乎相同」的判定参数（理由见 mergeQuoteTurns 注释）。 */
+export const DUP_QUOTE_MIN_LEN = 12
+export const DUP_QUOTE_SIM = 0.9
+
+/** 找前面最近的一条「长句、几乎相同、而且是别人说的」的发言；找不到返回 -1。 */
+function findNearDuplicate(turns: TranscriptTurn[], index: number): number {
+  const current = normalizeForAlignLoose(turns[index].text)
+  if (current.length < DUP_QUOTE_MIN_LEN) return -1
+  const currentSpeaker = normalizeSpeakerForCompare(turns[index].speaker)
+  for (let k = index - 1; k >= 0; k--) {
+    const t = turns[k]
+    if (t.kind === "time") continue
+    const prev = normalizeForAlignLoose(t.text)
+    if (prev.length < DUP_QUOTE_MIN_LEN) continue
+    if (similarityLoose(prev, current) < DUP_QUOTE_SIM) continue
+    // 同一个人把同一句长话又发一遍 = 真的重复发消息，不当引用（否则会把正常发言吞掉）；
+    // 别人说的同一句长话重复出现，才是客户端展示的引用块。
+    if (normalizeSpeakerForCompare(t.speaker) === currentSpeaker) continue
+    return k
+  }
+  return -1
+}
+
+/** 去掉空白/标点/符号后的文本（只看字和数字）。 */
+function normalizeForAlignLoose(text: string): string {
+  return String(text ?? "")
+    .normalize("NFKC")
+    .replace(/[\s\p{P}\p{S}]/gu, "")
+    .toLowerCase()
+}
+
+/** 公共前后缀占比，和 transcript-align 的口径一致（避免循环依赖只在这里留一份小实现）。 */
+function similarityLoose(a: string, b: string): number {
+  if (!a && !b) return 1
+  if (!a || !b) return 0
+  if (a === b) return 1
+  let prefix = 0
+  const min = Math.min(a.length, b.length)
+  while (prefix < min && a[prefix] === b[prefix]) prefix++
+  let suffix = 0
+  while (suffix < min - prefix && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++
+  return (2 * (prefix + suffix)) / (a.length + b.length)
+}
+
+/** 模型把「名字：内容」整个塞进发言人时拆开；正常的行原样返回。 */
+export function splitSpeakerContent(turn: TranscriptTurn): TranscriptTurn {
+  const split = splitSpeakerContentTurn(turn)
+  if (split === turn) return turn
+  return { ...split, rawSpeaker: turn.rawSpeaker ?? split.speaker }
 }
 
 export function isGenericSpeaker(name: string): boolean {
@@ -176,6 +278,10 @@ export type ResolvedTranscript = {
   uncertain: string[]
   /** 识别出的引用行数（已并进前一条消息）。 */
   quotes: number
+  /** 其中按「名字：内容」认出的行数。 */
+  quotesByName: number
+  /** 其中按「和前面消息几乎重复」认出的行数。 */
+  quotesByDup: number
 }
 
 /** 定好发言人后同时留下「模型看到的原始名字」，重判和排查都要用。 */
@@ -257,8 +363,13 @@ export function resolveSpeakerTurns(
     uncertain.push(`有 ${noSideMine} 条消息读不出气泡左右，是按昵称认成「我」的`)
   }
   if (unknown) uncertain.push(`有 ${unknown} 条消息既没有昵称、也读不出气泡左右，发言人标为「未知」`)
-  if (withQuotes.quotes) uncertain.push(`有 ${withQuotes.quotes} 行是引用（「名字：内容」），已并进上一条消息，标为「（引用 …）」`)
-  return { turns: resolved, uncertain, quotes: withQuotes.quotes }
+  if (withQuotes.quotes) {
+    const parts: string[] = []
+    if (withQuotes.quotesByName) parts.push(`按「名字：内容」${withQuotes.quotesByName} 行`)
+    if (withQuotes.quotesByDup) parts.push(`和前面消息几乎重复${withQuotes.quotesByDup} 行`)
+    uncertain.push(`有 ${withQuotes.quotes} 行是引用（${parts.join("、")}），已并进上一条消息，标为「（引用 …）」`)
+  }
+  return { turns: resolved, uncertain, quotes: withQuotes.quotes, quotesByName: withQuotes.quotesByName, quotesByDup: withQuotes.quotesByDup }
 }
 
 /** 转写行 → 原始聊天记录格式（首行仍是 OCR 标记，由 formatScreenshotChat 加）。 */
@@ -266,7 +377,7 @@ export function resolveAndFormat(
   turns: TranscriptTurn[],
   settings: SpeakerSettings,
   extraNames: string[] = [],
-): { chat: string; uncertain: string[]; turns: TranscriptTurn[]; quotes: number } {
-  const { turns: resolved, uncertain, quotes } = resolveSpeakerTurns(turns, settings, extraNames)
-  return { chat: formatScreenshotChat(resolved), uncertain, turns: resolved, quotes }
+): { chat: string; uncertain: string[]; turns: TranscriptTurn[]; quotes: number; quotesByName: number; quotesByDup: number } {
+  const { turns: resolved, uncertain, quotes, quotesByName, quotesByDup } = resolveSpeakerTurns(turns, settings, extraNames)
+  return { chat: formatScreenshotChat(resolved), uncertain, turns: resolved, quotes, quotesByName, quotesByDup }
 }

@@ -308,3 +308,143 @@ describe("引用识别（系统提示 + 「名字：内容」）", () => {
     expect(chat.split("\n").filter((l) => l.includes("系统提示"))).toHaveLength(0)
   })
 })
+
+describe("引用识别（PR-A 放宽：不看发言人是谁）", () => {
+  it("发言人写成「我」，但内容是「客户名：…」→ 也算引用", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "我", text: "客户甲：再发一下日志", side: "right" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.quotesByName).toBe(1)
+    expect(out.turns).toHaveLength(1)
+    expect(out.turns[0].quote).toEqual({ name: "客户甲", text: "再发一下日志" })
+  })
+
+  it("发言人写成「客户」，但内容是「lily：…」（lily 是我的昵称）→ 也算引用", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户", text: "这个版本什么时候能好", side: "left" }),
+        t({ speaker: "客户", text: "lily：上周说的补丁不管用", side: "left" }),
+      ],
+      ["lily"],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns[0].text).toContain("（引用 lily：上周说的补丁不管用）")
+  })
+
+  it("发言人写成「lily」本身（我的昵称）也一样认", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "好", side: "left" }),
+        t({ speaker: "lily", text: "客户甲：明天给你", side: "right" }),
+      ],
+      ["lily"],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns).toHaveLength(1)
+  })
+
+  it("和前面消息几乎重复的长句 → 算引用，记下来源的名字和原文", () => {
+    const longText = "这个问题明天去现场看一下相机参数再调一下曝光"
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: longText, side: "left" }),
+        t({ speaker: "客户甲", text: "好的", side: "left" }),
+        t({ speaker: "我", text: longText, side: "right" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.quotesByDup).toBe(1)
+    expect(out.turns[1].quote).toEqual({ name: "客户甲", text: longText })
+  })
+
+  it("短消息自然重复（好的 / 收到）不并", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "好的", side: "left" }),
+        t({ speaker: "我", text: "好的", side: "right" }),
+        t({ speaker: "客户甲", text: "收到", side: "left" }),
+        t({ speaker: "我", text: "收到", side: "right" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(0)
+    expect(out.turns).toHaveLength(4)
+  })
+
+  it("差不多的长句（相似度 ≥0.9）也能认出来", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "这个问题明天去现场看一下相机参数再调一下曝光", side: "left" }),
+        t({ speaker: "客户甲", text: "好的", side: "left" }),
+        t({ speaker: "我", text: "这个问题明天去现场看一下相机参数再调下曝光", side: "right" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.quotesByDup).toBe(1)
+  })
+
+  it("没有上一条消息时不动（保持原样）", () => {
+    const out = mergeQuoteTurns([t({ speaker: "客户甲", text: "客户甲：你好", side: "left" })], [])
+    expect(out.quotes).toBe(0)
+    expect(out.turns).toHaveLength(1)
+  })
+
+  it("uncertain 里分开写两种形态的条数", () => {
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "客户甲", text: "这个问题明天去现场看一下相机参数再调一下曝光", side: "left" }),
+        t({ speaker: "客户甲", text: "客户甲：再发一次", side: "left" }),
+        t({ speaker: "我", text: "这个问题明天去现场看一下相机参数再调一下曝光", side: "right" }),
+      ],
+      settings,
+    )
+    expect(out.quotes).toBe(2)
+    expect(out.uncertain.join("")).toContain("按「名字：内容」1 行")
+    expect(out.uncertain.join("")).toContain("和前面消息几乎重复1 行")
+  })
+
+  it("同一个人把同一句长话发两遍 = 真重复，不并", () => {
+    const longText = "这个问题明天去现场看一下相机参数再调一下曝光"
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: longText, side: "left" }),
+        t({ speaker: "客户甲", text: "好的", side: "left" }),
+        t({ speaker: "客户甲", text: longText, side: "left" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(0)
+    expect(out.turns).toHaveLength(3)
+  })
+
+  it("已经并过引用的消息不会被重复识别（正文里的「（引用 …）」不算新引用）", () => {
+    const merged = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "我", text: "客户甲：再发一下日志", side: "right" }),
+      ],
+      [],
+    )
+    const again = mergeQuoteTurns(merged.turns, [])
+    expect(again.quotes).toBe(0)
+    expect(again.turns).toHaveLength(1)
+    expect(again.turns[0].text).toContain("（引用 客户甲：再发一下日志）")
+  })
+
+  it("「内容塞进发言人、正文为空」的坏行先拆开再判（R079 lily 那行）", () => {
+    const out = resolveSpeakerTurns([t({ speaker: "lily：你们软件能连续取两张吗", text: "", side: "left" })], {
+      myNicknames: ["lily"],
+      companyPrefixes: [],
+    })
+    expect(out.turns).toHaveLength(1)
+    expect(out.turns[0].speaker).toBe("我")
+    expect(out.turns[0].text).toBe("你们软件能连续取两张吗")
+  })
+})

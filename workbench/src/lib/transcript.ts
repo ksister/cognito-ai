@@ -190,7 +190,26 @@ function turnFromObject(item: object, ctx: SpeakerContext): TranscriptTurn | nul
   if (!speaker.trim()) speaker = inferSpeakerFromSide(sideRaw, ctx) ?? ""
   if (!speaker && !text) return null
   if (text.trim() === OCR_TRANSCRIPT_MARKER && !speaker.trim()) return null
-  return { speaker, text, kind: "speech", ...(side ? { side } : {}) }
+  return splitSpeakerContentTurn({ speaker, text, kind: "speech", ...(side ? { side } : {}) })
+}
+
+/** 「名字」和「内容」之间那个冒号（引用行 / 模型把整行塞进发言人时都会出现）。 */
+const SPEAKER_CONTENT_LINE = /^([^：:\n]{1,40})[：:]\s*([\s\S]+)$/
+
+/**
+ * 模型偶尔把「名字：内容」整行塞进发言人、正文留空（R079 里 lily 那行就是这样）。
+ * 这里拆回「发言人 = 名字、正文 = 内容」，否则「lily」明明在昵称里也认不出是我。
+ * 正常的行原样返回。
+ */
+export function splitSpeakerContentTurn(turn: TranscriptTurn): TranscriptTurn {
+  if (turn.kind === "time") return turn
+  if (String(turn.text ?? "").trim()) return turn
+  const m = String(turn.speaker ?? "").trim().match(SPEAKER_CONTENT_LINE)
+  if (!m) return turn
+  const name = m[1].trim()
+  const text = m[2].trim()
+  if (!name || !text) return turn
+  return { ...turn, speaker: name, text }
 }
 
 /** Accept the VL `transcript` value: turn array, one turn object, or `发言人：内容` lines. */

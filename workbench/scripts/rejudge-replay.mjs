@@ -113,7 +113,11 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       ...(t.side ? { side: t.side } : {}),
     }))
     const titleNames = namesFromWindowTitle(windowTitleFor(run))
-    const { turns: resolved, uncertain: speakerNotes, quotes } = resolveSpeakerTurns(input, settings, titleNames)
+    const { turns: resolved, uncertain: speakerNotes, quotes, quotesByName, quotesByDup } = resolveSpeakerTurns(
+      input,
+      settings,
+      titleNames,
+    )
     const after = countSpeakers(resolved)
     const same =
       before.me === after.me &&
@@ -126,7 +130,7 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       `${run.r} ${run.transcriptPromptVersion ?? "-"} ${run.runId}: ` +
         `我 ${before.me}→${after.me} 同事 ${before.colleague}→${after.colleague} ` +
         `客户 ${before.customer}→${after.customer} 未知 ${before.unknown}→${after.unknown}` +
-        (quotes ? ` 引用 ${quotes}` : "") +
+        (quotes ? ` 引用 ${quotes}（名字:内容 ${quotesByName} / 重复 ${quotesByDup}）` : "") +
         `${same ? "" : " *"}`,
     )
     if (!apply) continue
@@ -139,6 +143,7 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       text: t.text,
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
+      ...(t.quote ? { quote: t.quote } : {}),
     }))
     run.transcript = formatScreenshotChat(resolved)
     run.uncertain = nextUncertain
