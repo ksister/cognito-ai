@@ -322,7 +322,7 @@ describe("飞书「回复」行（PR-A 补充）", () => {
     expect(out.turns).toHaveLength(2)
     expect(out.turns[1].speaker).toBe("我")
     expect(out.turns[1].text).toContain("还有log")
-    expect(out.turns[1].quote).toEqual({ name: "张珂", text: "把工程和能高线跑的图发一下 还有log" })
+    expect(out.turns[1].quote).toMatchObject({ name: "张珂", text: "把工程和能高线跑的图发一下 还有log" })
   })
 
   it("「温天正：|回复 殷杰：被引用的话 实际回复」→ 仍是温天正的消息", () => {
@@ -360,7 +360,7 @@ describe("飞书「回复」行（PR-A 补充）", () => {
     )
     expect(out.repliesSplit).toBe(1)
     expect(out.turns[1].speaker).toBe("客户甲")
-    expect(out.turns[1].quote).toEqual({ name: "我", text: "这句话是我说的" })
+    expect(out.turns[1].quote).toMatchObject({ name: "我", text: "这句话是我说的" })
     expect(out.turns[1].text).toContain("好的")
   })
 
@@ -386,7 +386,7 @@ describe("飞书「回复」行（PR-A 补充）", () => {
     )
     expect(out.quotesByName).toBe(1)
     expect(out.turns).toHaveLength(1)
-    expect(out.turns[0].quote).toEqual({ name: "lily", text: "你们软件能连续取两张吗" })
+    expect(out.turns[0].quote).toMatchObject({ name: "lily", text: "你们软件能连续取两张吗" })
   })
 })
 
@@ -402,7 +402,7 @@ describe("引用识别（PR-A 放宽：不看发言人是谁）", () => {
     expect(out.quotes).toBe(1)
     expect(out.quotesByName).toBe(1)
     expect(out.turns).toHaveLength(1)
-    expect(out.turns[0].quote).toEqual({ name: "客户甲", text: "再发一下日志" })
+    expect(out.turns[0].quote).toMatchObject({ name: "客户甲", text: "再发一下日志" })
   })
 
   it("发言人写成「客户」，但内容是「lily：…」（lily 是我的昵称）→ 也算引用", () => {
@@ -441,7 +441,7 @@ describe("引用识别（PR-A 放宽：不看发言人是谁）", () => {
     )
     expect(out.quotes).toBe(1)
     expect(out.quotesByDup).toBe(1)
-    expect(out.turns[1].quote).toEqual({ name: "客户甲", text: longText })
+    expect(out.turns[1].quote).toMatchObject({ name: "客户甲", text: longText })
   })
 
   it("短消息自然重复（好的 / 收到）不并", () => {

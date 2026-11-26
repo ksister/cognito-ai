@@ -147,10 +147,10 @@ export function mergeQuoteTurns(
   let repliesSplit = 0
   let repliesUnsplit = 0
 
-  const appendQuote = (baseIdx: number, quote: { name: string; text: string }) => {
+  const appendQuote = (baseIdx: number, quote: { name: string; text: string }, source: "name" | "dup") => {
     const base = out[baseIdx]
     const form = base.text ? `${base.text}（引用 ${quote.name}：${quote.text}）` : `（引用 ${quote.name}：${quote.text}）`
-    out[baseIdx] = { ...base, text: form, quote }
+    out[baseIdx] = { ...base, text: form, quote: { ...quote, source } }
   }
   const lastBase = (): number => {
     for (let i = out.length - 1; i >= 0; i--) if (out[i].kind !== "time") return i
@@ -175,7 +175,7 @@ export function mergeQuoteTurns(
           ? `${body}（引用 ${quote.name}：${quote.text}）`
           : `（引用 ${quote.name}：${quote.text}）`
         : body
-      out.push({ ...turn, text: nextText, ...(quote ? { quote } : {}) })
+      out.push({ ...turn, text: nextText, ...(quote ? { quote: { ...quote, source: "reply" as const } } : {}) })
       if (quote) repliesSplit++
       else repliesUnsplit++
       continue
@@ -183,7 +183,7 @@ export function mergeQuoteTurns(
 
     // 模型把「名字：内容」整行塞进发言人、正文为空：这本身就是引用的形状，直接按规则 ① 并进上一条。
     if (turn.stuffedFromSpeaker && prev >= 0) {
-      appendQuote(prev, { name: turn.speaker.trim(), text: turn.text.trim() })
+      appendQuote(prev, { name: turn.speaker.trim(), text: turn.text.trim() }, "name")
       quotes++
       quotesByName++
       continue
@@ -197,7 +197,7 @@ export function mergeQuoteTurns(
     const nameLooksLikeName =
       Boolean(quotedName) && quotedName.length <= 20 && !NAME_BAD_CHARS.test(quotedName) && !quotedName.includes("回复")
     if (prev >= 0 && m && quotedText && nameLooksLikeName && quoteNameSeen(known, quotedName)) {
-      appendQuote(prev, { name: quotedName, text: quotedText })
+      appendQuote(prev, { name: quotedName, text: quotedText }, "name")
       quotes++
       quotesByName++
       continue
@@ -207,7 +207,7 @@ export function mergeQuoteTurns(
     const dupSource = prev >= 0 ? findNearDuplicate(normalized, index) : -1
     if (dupSource >= 0) {
       const source = normalized[dupSource]
-      appendQuote(prev, { name: source.speaker.trim() || UNKNOWN, text: source.text })
+      appendQuote(prev, { name: source.speaker.trim() || UNKNOWN, text: source.text }, "dup")
       quotes++
       quotesByDup++
       continue
