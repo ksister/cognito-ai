@@ -21,6 +21,7 @@ import {
   parseTranscript,
   type TranscriptTurn,
 } from "./transcript"
+import { mergeQuoteTurns } from "./speaker-resolve"
 import { type ExtractErrorCode, type ExtractResult } from "./types"
 
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY
@@ -270,7 +271,11 @@ export type ScreenshotExtractOptions = {
 }
 
 /** Merge finished screenshots in image order; the first window title wins. */
-export function mergeInOrder(parts: TranscribedPart[], prefixes: string[] = []): {
+export function mergeInOrder(
+  parts: TranscribedPart[],
+  prefixes: string[] = [],
+  extraNames: string[] = [],
+): {
   turns: TranscriptTurn[]
   windowTitle: string
 } {
@@ -279,7 +284,9 @@ export function mergeInOrder(parts: TranscribedPart[], prefixes: string[] = []):
     parts.map((p) => p.turns),
     prefixes,
   )
-  return { turns: dropTitleTurns(merged, windowTitle), windowTitle }
+  // 引用识别（T33）：和回放共用同一份规则——「系统提示」+「名字：内容」并进上一条。
+  const { turns } = mergeQuoteTurns(dropTitleTurns(merged, windowTitle), extraNames)
+  return { turns, windowTitle }
 }
 
 /** Input checks shared by the streaming and the one-shot screenshot paths. */
@@ -309,7 +316,7 @@ async function fieldsFromScreenshots(
     if (reason instanceof VlExtractError) throw reason
     throw new VlExtractError("parse_error", `截图转写失败：${(reason as Error)?.message || "未知错误"}。可改用粘贴文字。`)
   }
-  const { turns, windowTitle } = mergeInOrder(parts, opts.prefixes)
+  const { turns, windowTitle } = mergeInOrder(parts, opts.prefixes, opts.me ? [opts.me] : [])
   const failureNotes = failures.map((f) => failedScreenshotNote(f.index))
   const chat = formatScreenshotChat(turns)
   const titleHint = windowTitle
@@ -371,7 +378,7 @@ export async function extractFromScreenshotsStream(
     const signature = `${parts.length}/${done}`
     if (signature === lastEmitted) return
     lastEmitted = signature
-    const { turns, windowTitle } = mergeInOrder(parts, opts.prefixes)
+    const { turns, windowTitle } = mergeInOrder(parts, opts.prefixes, opts.me ? [opts.me] : [])
     onProgress({
       done,
       total: compressed.length,

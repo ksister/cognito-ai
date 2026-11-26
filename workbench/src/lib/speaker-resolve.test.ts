@@ -5,6 +5,8 @@ import {
   isGenericSpeaker,
   isMyNickname,
   isRealName,
+  isSystemHintSpeaker,
+  mergeQuoteTurns,
   resolveAndFormat,
   resolveSpeakerTurns,
 } from "./speaker-resolve"
@@ -166,5 +168,108 @@ describe("resolveAndFormat", () => {
     expect(chat).toContain("李四：读码率低")
     expect(chat).toContain("我：我看一下")
     expect(chat).toContain("—— 10月28日 09:12 ——")
+  })
+})
+
+describe("引用识别（系统提示 + 「名字：内容」）", () => {
+  it("认得「系统提示」这类发言人", () => {
+    for (const name of ["系统提示", "系统消息", "系统", "提示"]) expect(isSystemHintSpeaker(name)).toBe(true)
+    expect(isSystemHintSpeaker("张三")).toBe(false)
+    expect(isSystemHintSpeaker("")).toBe(false)
+  })
+
+  it("名字在本条聊天里出现过 → 并进前一条，不单独成行", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "系统提示", text: "客户甲：之前说的那个版本不行" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns).toHaveLength(1)
+    expect(out.turns[0].text).toBe("读码率低（引用 客户甲：之前说的那个版本不行）")
+  })
+
+  it("我的昵称（extraNames）也算出现过", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "什么时候能好", side: "left" }),
+        t({ speaker: "系统提示", text: "张珂：我看一下日志" }),
+      ],
+      ["张珂"],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns[0].text).toContain("（引用 张珂：我看一下日志）")
+  })
+
+  it("引用的名字带公司/标签前缀也算出现过（后缀匹配）", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "李四", text: "什么时候能好", side: "left" }),
+        t({ speaker: "系统提示", text: "工作 宇创 李四：我看一下日志" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns[0].text).toContain("（引用 工作 宇创 李四：我看一下日志）")
+  })
+
+  it("名字没见过 → 保留原样，不当引用", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "系统提示", text: "陌生人：这句话不是引用" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(0)
+    expect(out.turns).toHaveLength(2)
+  })
+
+  it("没有「名字：内容」形状的系统提示也不动", () => {
+    const out = mergeQuoteTurns([t({ speaker: "系统提示", text: "以下是引用内容" })], [])
+    expect(out.quotes).toBe(0)
+    expect(out.turns).toHaveLength(1)
+  })
+
+  it("引用前面只有时间分隔行时，挂到更早的那条发言上", () => {
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ text: "—— 10月28日 09:12 ——", kind: "time" }),
+        t({ speaker: "系统提示", text: "客户甲：你好" }),
+      ],
+      [],
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns[0].text).toContain("（引用 客户甲：你好）")
+    expect(out.turns[1].kind).toBe("time")
+  })
+
+  it("resolveSpeakerTurns 会先并引用，再判发言人，并回报引用条数", () => {
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "系统提示", text: "客户甲：之前说的版本不行" }),
+      ],
+      settings,
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns).toHaveLength(1)
+    expect(out.turns[0].speaker).toBe("客户甲")
+    expect(out.turns[0].text).toContain("（引用 客户甲：之前说的版本不行）")
+  })
+
+  it("转写格式里引用不单独成行", () => {
+    const { chat } = resolveAndFormat(
+      [
+        t({ speaker: "客户甲", text: "读码率低", side: "left" }),
+        t({ speaker: "系统提示", text: "客户甲：之前说的那个版本不行" }),
+      ],
+      settings,
+    )
+    expect(chat).toContain("客户甲：读码率低（引用 客户甲：之前说的那个版本不行）")
+    expect(chat.split("\n").filter((l) => l.includes("系统提示"))).toHaveLength(0)
   })
 })

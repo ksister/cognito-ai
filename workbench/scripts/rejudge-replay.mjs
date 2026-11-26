@@ -65,6 +65,7 @@ const resultsRoot = path.join(kb, "replay", "results")
 let scanned = 0
 let changed = 0
 let skipped = 0
+let quoteTotal = 0
 
 for (const dirName of fs.readdirSync(resultsRoot)) {
   const dir = path.join(resultsRoot, dirName)
@@ -90,7 +91,7 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),
     }))
-    const { turns: resolved, uncertain: speakerNotes } = resolveSpeakerTurns(input, settings)
+    const { turns: resolved, uncertain: speakerNotes, quotes } = resolveSpeakerTurns(input, settings)
     const after = countSpeakers(resolved)
     const same =
       before.me === after.me &&
@@ -98,18 +99,24 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
       before.customer === after.customer &&
       before.unknown === after.unknown
     if (!same) changed++
+    if (quotes) quoteTotal += quotes
     console.log(
       `${run.r} ${run.transcriptPromptVersion ?? "-"} ${run.runId}: ` +
         `我 ${before.me}→${after.me} 同事 ${before.colleague}→${after.colleague} ` +
-        `客户 ${before.customer}→${after.customer} 未知 ${before.unknown}→${after.unknown}${same ? "" : " *"}`,
+        `客户 ${before.customer}→${after.customer} 未知 ${before.unknown}→${after.unknown}` +
+        (quotes ? ` 引用 ${quotes}` : "") +
+        `${same ? "" : " *"}`,
     )
     if (!apply) continue
     const kept = (run.uncertain ?? []).filter((n) => !SPEAKER_NOTE.test(String(n)))
     const nextUncertain = [...kept, ...speakerNotes]
-    run.turns = run.turns.map((t, i) => ({
-      ...t,
-      speaker: resolved[i].speaker,
-      ...(resolved[i].side ? { side: resolved[i].side } : {}),
+    // 引用行会并进上一条，行数可能变少：按重判后的 turns 重建，rawSpeaker 用重判时记下的原始名字。
+    run.turns = resolved.map((t) => ({
+      speaker: t.speaker,
+      rawSpeaker: t.rawSpeaker ?? "",
+      text: t.text,
+      kind: t.kind === "time" ? "time" : "speech",
+      ...(t.side ? { side: t.side } : {}),
     }))
     run.transcript = formatScreenshotChat(resolved)
     run.uncertain = nextUncertain
@@ -118,6 +125,6 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
 }
 
 console.log(
-  `\n共扫描 ${scanned} 次运行；计数有变化 ${changed} 次；跳过 ${skipped} 次。` +
+  `\n共扫描 ${scanned} 次运行；计数有变化 ${changed} 次；跳过 ${skipped} 次；识别引用 ${quoteTotal} 行。` +
     (apply ? "已写回。" : "（dry-run，没有写文件；加 --apply 才写）"),
 )
