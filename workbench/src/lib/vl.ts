@@ -21,7 +21,7 @@ import {
   parseTranscript,
   type TranscriptTurn,
 } from "./transcript"
-import { mergeQuoteTurns } from "./speaker-resolve"
+import { mergeQuoteTurns, namesFromWindowTitle } from "./speaker-resolve"
 import { type ExtractErrorCode, type ExtractResult } from "./types"
 
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY
@@ -285,7 +285,9 @@ export function mergeInOrder(
     prefixes,
   )
   // 引用识别（T33）：和回放共用同一份规则——「系统提示」+「名字：内容」并进上一条。
-  const { turns } = mergeQuoteTurns(dropTitleTurns(merged, windowTitle), extraNames)
+  // 单聊里对方的发言会被标成「客户」、名字从没作为发言人出现，所以窗口标题里的人名也算「见过的名字」。
+  const titleNames = namesFromWindowTitle(windowTitle)
+  const { turns } = mergeQuoteTurns(dropTitleTurns(merged, windowTitle), [...extraNames, ...titleNames])
   return { turns, windowTitle }
 }
 

@@ -12,7 +12,7 @@ import { loadFeishuSchemaState } from "./feishu-schema-load"
 import { estimateCost, priceFor, readModelPrices, type ModelPrice, type ModelPrices } from "./model-prices"
 import { averageUsage, type TokenAverage } from "./replay-model"
 import { loadCompanyPrefixes, loadSpeakersSettings } from "./speakers-config"
-import { resolveAndFormat } from "./speaker-resolve"
+import { namesFromWindowTitle, resolveAndFormat } from "./speaker-resolve"
 import {
   buildSnapshotTranscriptPrompt,
   buildTranscriptPromptV3,
@@ -483,7 +483,8 @@ export async function runRetranscribe({
   // 按图片顺序拼（缺图的位置跳过），再去掉相邻截图的重叠。
   const ordered = parts.filter((p): p is TranscriptTurn[] => Array.isArray(p))
   const mergedTurns = dropTitleTurns(mergeTranscriptList(ordered, settings.companyPrefixes), windowTitle)
-  const { chat, uncertain: speakerUncertain, turns: resolvedTurns } = resolveAndFormat(mergedTurns, settings)
+  const titleNames = namesFromWindowTitle(windowTitle)
+  const { chat, uncertain: speakerUncertain, turns: resolvedTurns } = resolveAndFormat(mergedTurns, settings, titleNames)
   const chatForModel = transcriptForModel(chat)
 
   const { result: fieldsResult, usage: fieldUsage } = await extractRecordWithUsage(chatForModel, {
@@ -524,9 +525,11 @@ export async function runRetranscribe({
     usage: { promptTokens: vlPromptTokens + (fieldUsage?.promptTokens ?? 0), completionTokens: vlCompletionTokens + (fieldUsage?.completionTokens ?? 0) },
     costYuan,
     transcript: chat,
+    ...(windowTitle ? { windowTitle } : {}),
     turns: resolvedTurns.map((t, i) => ({
       speaker: t.speaker,
-      rawSpeaker: mergedTurns[i]?.speaker ?? "",
+      // 引用合并会减少行数，rawSpeaker 优先用重判时记下的原始名字，不要再按下标取。
+      rawSpeaker: t.rawSpeaker ?? mergedTurns[i]?.speaker ?? "",
       text: t.text,
       kind: t.kind === "time" ? "time" : "speech",
       ...(t.side ? { side: t.side } : {}),

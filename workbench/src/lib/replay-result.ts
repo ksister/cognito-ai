@@ -82,6 +82,8 @@ export type ReplayRun = {
   costYuan: number | null
   /** 这次喂给模型的转写原文（带 OCR 标记行，界面上可展开查看）。 */
   transcript: string
+  /** 聊天窗口标题（cleanWindowTitle 之后）；引用识别时用来取「见过的名字」。 */
+  windowTitle?: string
   /**
    * 「从截图重新转写」时保存逐条发言人（带气泡左右）：
    * 排查「客户被标成我」时看侧边分布，T29 取「我当时的实际回复」也用得上。
@@ -424,6 +426,7 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
     usage,
     costYuan: typeof o.costYuan === "number" ? o.costYuan : null,
     transcript: str(o.transcript),
+    ...(str(o.windowTitle) ? { windowTitle: str(o.windowTitle).slice(0, 120) } : {}),
     ...(turns && turns.length ? { turns } : {}),
     fields,
     uncertain: Array.isArray(o.uncertain) ? o.uncertain.map(String) : [],

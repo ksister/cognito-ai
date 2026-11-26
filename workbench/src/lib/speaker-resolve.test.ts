@@ -7,6 +7,7 @@ import {
   isRealName,
   isSystemHintSpeaker,
   mergeQuoteTurns,
+  namesFromWindowTitle,
   resolveAndFormat,
   resolveSpeakerTurns,
 } from "./speaker-resolve"
@@ -213,6 +214,40 @@ describe("引用识别（系统提示 + 「名字：内容」）", () => {
     )
     expect(out.quotes).toBe(1)
     expect(out.turns[0].text).toContain("（引用 工作 宇创 李四：我看一下日志）")
+  })
+
+  it("单聊里引用对方的话也能认出来（窗口标题里的人名算「见过」）", () => {
+    const title = namesFromWindowTitle("工作 宇创 魏笑凡")
+    expect(title.some((n) => n.includes("魏笑凡"))).toBe(true)
+    const out = resolveSpeakerTurns(
+      [
+        t({ speaker: "客户", text: "这个版本什么时候能好", side: "left" }),
+        t({ speaker: "系统提示", text: "魏笑凡：上周说的那个补丁不管用" }),
+      ],
+      settings,
+      title,
+    )
+    expect(out.quotes).toBe(1)
+    expect(out.turns[0].text).toContain("（引用 魏笑凡：上周说的那个补丁不管用）")
+  })
+
+  it("窗口标题的人名带公司/标签前缀也能后缀匹配", () => {
+    const title = namesFromWindowTitle("工作 宇创 魏笑凡")
+    const out = mergeQuoteTurns(
+      [
+        t({ speaker: "客户", text: "好", side: "left" }),
+        t({ speaker: "系统提示", text: "工作 宇创 魏笑凡：再确认下" }),
+      ],
+      title,
+    )
+    expect(out.quotes).toBe(1)
+  })
+
+  it("窗口标题里的人数括号、业务词不会当成名字", () => {
+    const names = namesFromWindowTitle("魏笑凡(3) 星图技术支持")
+    expect(names).toContain("魏笑凡")
+    expect(names.some((n) => n === "技术支持")).toBe(false)
+    expect(namesFromWindowTitle("")).toEqual([])
   })
 
   it("名字没见过 → 保留原样，不当引用", () => {

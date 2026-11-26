@@ -1,4 +1,4 @@
-import { formatScreenshotChat, normalizeSpeakerName, type TranscriptTurn } from "./transcript.ts"
+import { cleanWindowTitle, formatScreenshotChat, normalizeSpeakerName, type TranscriptTurn } from "./transcript.ts"
 import { normalizeSpeakerForCompare } from "./transcript-align.ts"
 
 /**
@@ -40,6 +40,31 @@ export function isSystemHintSpeaker(name: string): boolean {
 }
 
 const QUOTE_LINE = /^([^：:\n]{1,40})[：:]\s*([\s\S]+)$/
+
+/** 窗口标题里不能当名字的常见词。 */
+const TITLE_STOP_WORDS = ["技术支持", "客服", "支持", "群聊", "私聊", "工作", "生活", "客户", "对方", "聊天"]
+
+/**
+ * 从窗口标题里取「可能的人名」：私聊标题常见「工作 宇创 魏笑凡」，
+ * 单聊里对方的发言会被标成「客户」、人名从没以发言人出现，所以要把标题里的人名也算作见过。
+ * 做法：去掉人数括号、按空格/分隔符切段、去掉常见业务词，再补上整条标题（用于后缀匹配）。
+ */
+export function namesFromWindowTitle(rawTitle: string): string[] {
+  const title = cleanWindowTitle(rawTitle).replace(/[（(]\s*\d{1,3}\s*[)）]/g, "")
+  if (!title) return []
+  const segments = title
+    .split(/[\s\u3000·・.,，、;；:：\-—_|/\\()（）\[\]【】"'“”‘’]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const names = new Set<string>()
+  for (const seg of segments) {
+    if (TITLE_STOP_WORDS.includes(seg)) continue
+    if (normalizeSpeakerForCompare(seg).length >= 2) names.add(seg)
+  }
+  // 整条标题也加进去：引用写成「工作 宇创 魏笑凡：…」时靠后缀匹配命中。
+  if (normalizeSpeakerForCompare(title).length >= 2) names.add(title)
+  return [...names]
+}
 
 /**
  * 引用的名字算不算「在本条聊天里出现过」：
@@ -159,8 +184,12 @@ function withSpeaker(turn: TranscriptTurn, speaker: string): TranscriptTurn {
 }
 
 /** 按「真名优先、其余看气泡」定发言人；先把引用行并进前一条。 */
-export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSettings): ResolvedTranscript {
-  const withQuotes = mergeQuoteTurns(turns, settings.myNicknames)
+export function resolveSpeakerTurns(
+  turns: TranscriptTurn[],
+  settings: SpeakerSettings,
+  extraNames: string[] = [],
+): ResolvedTranscript {
+  const withQuotes = mergeQuoteTurns(turns, [...settings.myNicknames, ...extraNames])
   const resolved: TranscriptTurn[] = []
   let otherButRight = 0
   let noSideMine = 0
@@ -236,7 +265,8 @@ export function resolveSpeakerTurns(turns: TranscriptTurn[], settings: SpeakerSe
 export function resolveAndFormat(
   turns: TranscriptTurn[],
   settings: SpeakerSettings,
+  extraNames: string[] = [],
 ): { chat: string; uncertain: string[]; turns: TranscriptTurn[]; quotes: number } {
-  const { turns: resolved, uncertain, quotes } = resolveSpeakerTurns(turns, settings)
+  const { turns: resolved, uncertain, quotes } = resolveSpeakerTurns(turns, settings, extraNames)
   return { chat: formatScreenshotChat(resolved), uncertain, turns: resolved, quotes }
 }

@@ -98,6 +98,24 @@ describe("VL transcript", () => {
     expect(turns[0].text).toBe("极耳定位偏了约 0.3mm（引用 张工：之前说的那个版本也不行）")
   })
 
+  it("单聊里引用对方的话：窗口标题里的人名算「见过」（T33）", () => {
+    const { turns } = mergeInOrder(
+      [
+        {
+          turns: [
+            { speaker: "客户", text: "这个版本什么时候能好" },
+            { speaker: "系统提示", text: "魏笑凡：上周说的那个补丁不管用" },
+          ],
+          windowTitle: "工作 宇创 魏笑凡",
+        },
+      ],
+      [],
+      [],
+    )
+    expect(turns).toHaveLength(1)
+    expect(turns[0].text).toContain("（引用 魏笑凡：上周说的那个补丁不管用）")
+  })
+
   it("accepts 发言人/内容 objects and plain lines", () => {
     expect(
       parseTranscript([
