@@ -43,7 +43,7 @@ export type ReplayFieldReview = {
 }
 
 /** 逐条标记（T33 PR-B）：以后作为「标准答案」评估转写改进，按行号对上原转写。 */
-export type ReplayLineMarkType = "speaker" | "text" | "extra" | "quote"
+export type ReplayLineMarkType = "speaker" | "text" | "extra" | "quote" | "unquote"
 
 export type ReplayLineMark = {
   /** 第几条消息（从 1 数，只数发言行） */
@@ -240,8 +240,7 @@ export function isBlankFieldReview(f: ReplayFieldReview | null | undefined): boo
 /** 洗逐条标记：行号正整数、类型合法、原文/新值都有长度上限；同一行同一类型只留最后一条。 */
 export function normalizeLineMarks(input: unknown): ReplayLineMark[] {
   if (!Array.isArray(input)) return []
-  const out: ReplayLineMark[] = []
-  const seen = new Set<string>()
+  const byKey = new Map<string, ReplayLineMark>()
   for (const raw of input) {
     if (!raw || typeof raw !== "object") continue
     const o = raw as Record<string, unknown>
@@ -249,12 +248,9 @@ export function normalizeLineMarks(input: unknown): ReplayLineMark[] {
     const type = o.type
     if (!Number.isInteger(line) || line < 1 || line > 99999) continue
     if (!isReplayLineMarkType(type)) continue
-    const key = `${line}:${type}`
-    if (seen.has(key)) continue
-    seen.add(key)
     const newSpeaker = str(o.newSpeaker).trim().slice(0, 40) || undefined
     const newText = typeof o.newText === "string" ? o.newText.slice(0, 4000) : undefined
-    out.push({
+    byKey.set(`${line}:${type}`, {
       line,
       type,
       originalSpeaker: str(o.originalSpeaker).slice(0, 200),
@@ -263,11 +259,11 @@ export function normalizeLineMarks(input: unknown): ReplayLineMark[] {
       ...(newText !== undefined ? { newText } : {}),
     })
   }
-  return out.sort((a, b) => a.line - b.line)
+  return [...byKey.values()].sort((a, b) => a.line - b.line || a.type.localeCompare(b.type))
 }
 
 export function isReplayLineMarkType(v: unknown): v is ReplayLineMarkType {
-  return v === "speaker" || v === "text" || v === "extra" || v === "quote"
+  return v === "speaker" || v === "text" || v === "extra" || v === "quote" || v === "unquote"
 }
 
 export type ReplayRunState = {

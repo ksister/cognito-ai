@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils"
 import type { BubbleItem } from "@/lib/chat-bubble-view"
 
 /**
- * T33 PR-B：通用聊天气泡（纯显示）。T29「模拟问答」复用同一套气泡，
+ * T27 PR-B：通用聊天气泡（纯显示）。T29「模拟问答」复用同一套气泡，
  * 交互部分（标错、打分、输入框）通过 `renderActions` 插槽传进来，不写死在这个组件里。
  */
 export type ChatBubblesProps = {
@@ -14,6 +14,8 @@ export type ChatBubblesProps = {
   isSpeakerDiff?: (item: BubbleItem) => boolean
   /** 点击气泡（打开操作面板）。 */
   onBubbleClick?: (item: BubbleItem) => void
+  /** 点击气泡下方的引用灰字（用来标「不是引用」）。 */
+  onQuoteClick?: (item: BubbleItem) => void
   /** 交互区插槽：操作面板、打分、输入框等。 */
   renderActions?: (item: BubbleItem) => ReactNode
   /** 需要高亮滚动到的行（点顶部「待核对」时用）。 */
@@ -44,21 +46,27 @@ function BubbleBody({ item }: { item: BubbleItem }) {
   return <div className="whitespace-pre-wrap break-words">{item.displayText}</div>
 }
 
-function QuoteLine({ item }: { item: BubbleItem }) {
+function QuoteLine({ item, onClick }: { item: BubbleItem; onClick?: (item: BubbleItem) => void }) {
   if (!item.quote && !item.replyUnsplit) return null
   const label = item.quote ? `引用 ${item.quote.name}：${item.quote.text}` : "回复：拆不出引用的原文"
   const missing = (item.quote && !item.quoteVerified) || item.replyUnsplit
   const reason = item.replyUnsplit ? "回复拆不出引用" : "引用找不到原话"
   return (
-    <div
+    <button
+      type="button"
+      onClick={() => onClick?.(item)}
+      title="点一下可以标「不是引用」"
       className={cn(
-        "mt-1 rounded border-l-2 px-1.5 py-0.5 text-[11px] leading-snug",
-        missing ? "border-amber-500 bg-amber-50 text-amber-800" : "border-muted-foreground/30 bg-muted/40 text-muted-foreground",
+        "mt-1 block w-full rounded border-l-2 px-1.5 py-0.5 text-left text-[11px] leading-snug",
+        onClick && "hover:bg-muted",
+        missing
+          ? "border-amber-500 bg-amber-50 text-amber-800"
+          : "border-muted-foreground/30 bg-muted/40 text-muted-foreground",
       )}
     >
       <span className="line-clamp-2 break-words">{label}</span>
       {missing && <span className="ml-1 rounded bg-amber-200 px-1 text-[10px] font-medium text-amber-900">{reason}</span>}
-    </div>
+    </button>
   )
 }
 
@@ -68,6 +76,7 @@ export function ChatBubbles({
   dimOthers,
   isSpeakerDiff,
   onBubbleClick,
+  onQuoteClick,
   renderActions,
   activeLine,
   className,
@@ -119,7 +128,7 @@ export function ChatBubbles({
                       <span className="absolute -top-1 -right-1 size-2 rounded-full bg-red-500 ring-2 ring-background" />
                     )}
                   </button>
-                  <QuoteLine item={item} />
+                  <QuoteLine item={item} onClick={onQuoteClick} />
                 </div>
                 {renderActions?.(item)}
               </div>

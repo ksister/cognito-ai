@@ -17,6 +17,7 @@ import {
   latestRun,
   newRunId,
   normalizeForCompare,
+  normalizeLineMarks,
   parseReplayRun,
   replayFieldLabel,
   reviewHasIssue,
@@ -181,6 +182,42 @@ describe("review 判定", () => {
     expect(reviewHasIssue({ fields: { a: { note: "", issue: "fabricated" } }, reviewedAt: null, updatedAt: "" })).toBe(true)
     expect(reviewHasIssue({ fields: {}, speakerError: true, reviewedAt: null, updatedAt: "" })).toBe(true)
     expect(reviewHasIssue({ fields: {}, textError: true, reviewedAt: null, updatedAt: "" })).toBe(true)
+  })
+
+  it("逐条标记：洗非法输入、同类型去重、支持「不是引用」", () => {
+    const marks = normalizeLineMarks([
+      { line: 2, type: "speaker", originalSpeaker: "客户", originalText: "a", newSpeaker: "我" },
+      { line: 2, type: "speaker", originalSpeaker: "客户", originalText: "a", newSpeaker: "客户" },
+      { line: 3, type: "unquote", originalSpeaker: "我", originalText: "b" },
+      { line: 0, type: "text", originalSpeaker: "我", originalText: "c", newText: "d" },
+      { line: 4, type: "bogus", originalSpeaker: "我", originalText: "e" },
+    ])
+    expect(marks).toHaveLength(2)
+    expect(marks[0]).toMatchObject({ line: 2, type: "speaker", newSpeaker: "客户" })
+    expect(marks[1]).toMatchObject({ line: 3, type: "unquote" })
+  })
+
+  it("有发言/文字逐条标记也算「有问题」", () => {
+    const parsed = parseReplayRun({
+      version: 1,
+      runId: "20261124T090000-aaaa",
+      recordId: "recTEST",
+      r: "R079",
+      mode: "retranscribe",
+      at: "2026-11-24T09:00:00.000Z",
+      fields: {},
+      review: {
+        fields: {},
+        lineMarks: [
+          { line: 1, type: "speaker", originalSpeaker: "客户", originalText: "a", newSpeaker: "我" },
+          { line: 2, type: "extra", originalSpeaker: "客户", originalText: "b" },
+        ],
+        reviewedAt: "2026-11-24T10:00:00.000Z",
+        updatedAt: "2026-11-24T10:00:00.000Z",
+      },
+    })
+    expect(parsed?.review?.lineMarks).toHaveLength(2)
+    expect(deriveRunState([parsed!]).status).toBe("issue")
   })
 
   it("「文字有误」+ 错几处 + 备注 会存在 review 里", () => {

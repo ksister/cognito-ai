@@ -56,6 +56,33 @@ describe("buildBubbleItems", () => {
     expect(items[0].replyUnsplit).toBe(true)
     expect(summarizeBubbles(items).pending).toEqual([{ line: 1, reason: "reply-unsplit" }])
   })
+
+  it("标记对不上当前转写（重判过）→ 不显示红点，只计数", () => {
+    const items = buildBubbleItems([t({ speaker: "客户甲", text: "读码率低，帮我看看" })], [
+      { line: 1, type: "speaker", originalSpeaker: "客户甲", originalText: "旧文本不一样", newSpeaker: "我" },
+    ])
+    expect(items[0].markedTypes).toEqual([])
+    expect(items[0].staleMarkCount).toBe(1)
+    expect(summarizeBubbles(items).staleMarks).toBe(1)
+  })
+
+  it("文字只有标点/空格差别时，标记仍然对得上", () => {
+    const items = buildBubbleItems([t({ speaker: "客户甲", text: "读码率低，帮我看看。" })], [
+      { line: 1, type: "text", originalSpeaker: "客户甲", originalText: "读码率低 帮我看看", newText: "读码率偏低" },
+    ])
+    expect(items[0].markedTypes).toEqual(["text"])
+    expect(items[0].staleMarkCount).toBe(0)
+    expect(items[0].displayText).toBe("读码率偏低")
+  })
+
+  it("「不是引用」标记会计入统计", () => {
+    const text = "好（引用 客户甲：读码率低）"
+    const items = buildBubbleItems([t({ speaker: "我", text, quote: { name: "客户甲", text: "读码率低" } })], [
+      { line: 1, type: "unquote", originalSpeaker: "我", originalText: text },
+    ])
+    expect(items[0].markedTypes).toEqual(["unquote"])
+    expect(summarizeBubbles(items).unquoteMarked).toBe(1)
+  })
 })
 
 describe("summarizeBubbles", () => {

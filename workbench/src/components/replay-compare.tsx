@@ -96,11 +96,12 @@ type RunMode = "reorganize" | "retranscribe"
 type Edits = Record<string, ReplayFieldReview>
 
 /** 气泡标记的中文名（顶部统计和「已标」用）。 */
-const MARK_LABEL: Record<"speaker" | "text" | "extra" | "quote", string> = {
+const MARK_LABEL: Record<"speaker" | "text" | "extra" | "quote" | "unquote", string> = {
   speaker: "改发言人",
   text: "改文字",
   extra: "多余",
   quote: "是引用",
+  unquote: "不是引用",
 }
 
 const STATUS_STYLE: Record<ReplayStatus, string> = {
@@ -574,8 +575,13 @@ export function ReplayCompare({
                 </span>
                 <span className="text-muted-foreground">
                   发言人改了 {bubbleStats.speakerChanged} · 文字改了 {bubbleStats.textChanged} · 引用{" "}
-                  {bubbleStats.quoteMarked} · 多余 {bubbleStats.extraMarked}
+                  {bubbleStats.quoteMarked} · 不是引用 {bubbleStats.unquoteMarked} · 多余 {bubbleStats.extraMarked}
                 </span>
+                {bubbleStats.staleMarks > 0 && (
+                  <span className="rounded bg-rose-50 px-1.5 py-0.5 text-rose-700">
+                    有 {bubbleStats.staleMarks} 处标记对不上当前转写，请重新核对
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={scrollToPending}
@@ -642,6 +648,11 @@ export function ReplayCompare({
                       isSpeakerDiff={(item) => compareRows.some((r) => r.left?.text === item.text && r.speakerDiff)}
                       onBubbleClick={(item) => {
                         setEditingLine((cur) => (cur === item.line ? null : item.line))
+                        setEditSpeaker(item.speaker)
+                        setEditText(item.displayText)
+                      }}
+                      onQuoteClick={(item) => {
+                        setEditingLine(item.line)
                         setEditSpeaker(item.speaker)
                         setEditText(item.displayText)
                       }}
@@ -725,6 +736,22 @@ export function ReplayCompare({
                               >
                                 是引用（并进上一条）
                               </button>
+                              {(item.quote || item.replyUnsplit) && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    upsertMark({
+                                      line: item.line,
+                                      type: "unquote",
+                                      originalSpeaker: item.originalSpeaker,
+                                      originalText: item.originalText,
+                                    })
+                                  }
+                                  className="rounded border border-amber-300 px-1.5 py-0.5 text-amber-800 hover:bg-amber-50"
+                                >
+                                  不是引用（拆回单独一条）
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => setEditingLine(null)}
