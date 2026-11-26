@@ -535,6 +535,14 @@ export function ReplayCompare({
                               另一版：{row.right.speaker || "未知"}
                             </span>
                           )}
+                          {row.nameVariant && row.right && (
+                            <span
+                              className="ml-1 text-[10px] text-muted-foreground"
+                              title={`另一版写成：${row.right.speaker}`}
+                            >
+                              名字写法不同
+                            </span>
+                          )}
                           {!row.right && <span className="ml-1 rounded bg-zinc-200 px-1 text-[10px]">另一版没有</span>}
                         </span>
                       </div>
