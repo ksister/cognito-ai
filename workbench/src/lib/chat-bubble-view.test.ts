@@ -1,0 +1,88 @@
+import { describe, expect, it } from "vitest"
+import {
+  buildBubbleItems,
+  quoteFoundInEarlier,
+  similarText,
+  summarizeBubbles,
+  type BubbleInputTurn,
+} from "./chat-bubble-view"
+
+function t(over: Partial<BubbleInputTurn>): BubbleInputTurn {
+  return { speaker: "", text: "", kind: "speech", ...over }
+}
+
+describe("buildBubbleItems", () => {
+  it("按发言人分气泡类型：我在右、客户在左、同事带标签、时间居中", () => {
+    const items = buildBubbleItems([
+      t({ kind: "time", text: "—— 10月28日 09:12 ——" }),
+      t({ speaker: "我", text: "我看一下" }),
+      t({ speaker: "客户甲", text: "读码率低" }),
+      t({ speaker: "我方同事", text: "我先看" }),
+      t({ speaker: "系统提示", text: "系统提示" }),
+    ])
+    expect(items.map((i) => i.kind)).toEqual(["time", "speech", "speech", "speech", "speech"])
+    // 行号只数发言行，时间行是 0
+    expect(items.map((i) => i.line)).toEqual([0, 1, 2, 3, 4])
+    expect(items[1].variant).toBe("me")
+    expect(items[2].variant).toBe("other")
+    expect(items[3].variant).toBe("colleague")
+    expect(items[4].variant).toBe("system")
+  })
+
+  it("标记会替换显示值，并记下标记类型", () => {
+    const items = buildBubbleItems([t({ speaker: "客户甲", text: "读码率低" })], [
+      { line: 1, type: "speaker", originalSpeaker: "客户甲", originalText: "读码率低", newSpeaker: "我" },
+    ])
+    expect(items[0].displaySpeaker).toBe("我")
+    expect(items[0].originalSpeaker).toBe("客户甲")
+    expect(items[0].markedTypes).toEqual(["speaker"])
+  })
+
+  it("引用内容能在前面找到原话 → quoteVerified=true；找不到 → false 并进待核对", () => {
+    const item = buildBubbleItems([
+      t({ speaker: "客户甲", text: "读码率低，帮我看看" }),
+      t({ speaker: "我", text: "收到（引用 客户甲：读码率低，帮我看看）", quote: { name: "客户甲", text: "读码率低，帮我看看" } }),
+    ])[1]
+    expect(item.quoteVerified).toBe(true)
+    const missing = buildBubbleItems([
+      t({ speaker: "我", text: "好", quote: { name: "客户甲", text: "这句话根本前面没有" } }),
+    ])[0]
+    expect(missing.quoteVerified).toBe(false)
+    expect(summarizeBubbles([missing]).pending).toEqual([{ line: 1, reason: "quote-missing" }])
+  })
+
+  it("飞书回复没拆出引用的行 → 待核对", () => {
+    const items = buildBubbleItems([t({ speaker: "我", text: "|回复 张珂：被引用的话 还有log" })])
+    expect(items[0].replyUnsplit).toBe(true)
+    expect(summarizeBubbles(items).pending).toEqual([{ line: 1, reason: "reply-unsplit" }])
+  })
+})
+
+describe("summarizeBubbles", () => {
+  it("统计四类标记数量", () => {
+    const stats = summarizeBubbles(
+      buildBubbleItems(
+        [t({ speaker: "我", text: "a" }), t({ speaker: "客户甲", text: "b" }), t({ speaker: "客户甲", text: "c" })],
+        [
+          { line: 1, type: "speaker", originalSpeaker: "我", originalText: "a", newSpeaker: "客户" },
+          { line: 2, type: "text", originalSpeaker: "客户甲", originalText: "b", newText: "b2" },
+          { line: 2, type: "extra", originalSpeaker: "客户甲", originalText: "b" },
+          { line: 3, type: "quote", originalSpeaker: "客户甲", originalText: "c" },
+        ],
+      ),
+    )
+    expect(stats.speakerChanged).toBe(1)
+    expect(stats.textChanged).toBe(1)
+    expect(stats.extraMarked).toBe(1)
+    expect(stats.quoteMarked).toBe(1)
+  })
+})
+
+describe("quoteFoundInEarlier / similarText", () => {
+  it("整句或前缀都能匹配", () => {
+    expect(quoteFoundInEarlier(["这个问题明天去现场看一下相机参数"], "这个问题明天去现场看一下相机参数")).toBe(true)
+    expect(quoteFoundInEarlier(["这个问题明天去现场看一下相机参数再调曝光"], "这个问题明天去现场看一下相机参数")).toBe(true)
+    expect(quoteFoundInEarlier(["完全无关的一句话"], "这个问题明天去现场看一下相机参数")).toBe(false)
+    expect(similarText("读码率低。", "读码率低")).toBe(1)
+  })
+})

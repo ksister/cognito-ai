@@ -1,0 +1,179 @@
+/**
+ * T33 PR-B：把一次运行的 turns 转成聊天气泡模型（纯函数）。
+ *
+ * 显示层（气泡、名字、引用、时间、图片/文件占位）和交互层（标错、打分、输入框）分开：
+ * 这个文件只产出「显示需要什么」；交互由页面用插槽传进去（T29 模拟问答复用同一套气泡）。
+ */
+
+export type BubbleVariant = "me" | "other" | "colleague" | "system"
+
+export type BubbleMarkType = "speaker" | "text" | "extra" | "quote"
+
+export type BubbleItem = {
+  /** 第几条消息（从 1 数，只数发言行；标错用这个行号） */
+  line: number
+  variant: BubbleVariant
+  speaker: string
+  text: string
+  kind: "speech" | "time"
+  quote: { name: string; text: string; source?: "name" | "dup" | "reply" } | null
+  /** 引用的内容能在前面找到原话吗（找不到 = 待核对） */
+  quoteVerified: boolean
+  /** 飞书「回复」行但拆不出引用内容（待核对） */
+  replyUnsplit: boolean
+  /** 已经标过的类型（页面回填用） */
+  markedTypes: BubbleMarkType[]
+  /** 标过之后的显示值（改过发言人/文字时用） */
+  displaySpeaker: string
+  displayText: string
+  /** 原始值（悬停显示「原来的内容」） */
+  originalSpeaker: string
+  originalText: string
+}
+
+export type BubbleInputTurn = {
+  speaker: string
+  text: string
+  kind?: "speech" | "time"
+  quote?: { name: string; text: string; source?: "name" | "dup" | "reply" }
+}
+
+export type BubbleInputMark = {
+  line: number
+  type: BubbleMarkType
+  originalSpeaker: string
+  originalText: string
+  newSpeaker?: string
+  newText?: string
+}
+
+const REPLY_LINE = /^[\s|｜]*回复\s*[^：:\n]{1,20}[：:]/
+
+function normalizeForMatch(text: string): string {
+  return String(text ?? "")
+    .normalize("NFKC")
+    .replace(/[\s\p{P}\p{S}]/gu, "")
+    .toLowerCase()
+}
+
+/** 公共前后缀相似度（和 transcript-align 口径一致，这里留个小实现避免多一层依赖）。 */
+export function similarText(a: string, b: string): number {
+  const x = normalizeForMatch(a)
+  const y = normalizeForMatch(b)
+  if (!x && !y) return 1
+  if (!x || !y) return 0
+  if (x === y) return 1
+  let p = 0
+  const min = Math.min(x.length, y.length)
+  while (p < min && x[p] === y[p]) p++
+  let s = 0
+  while (s < min - p && x[x.length - 1 - s] === y[y.length - 1 - s]) s++
+  return (2 * (p + s)) / (x.length + y.length)
+}
+
+/** 引用内容能不能在前面消息里找到原话（整句 ≥0.9，或前面某条以它开头）。 */
+export function quoteFoundInEarlier(earlierTexts: string[], quoteText: string): boolean {
+  const q = normalizeForMatch(quoteText)
+  if (!q) return false
+  for (const t of earlierTexts) {
+    const n = normalizeForMatch(t)
+    if (!n) continue
+    if (similarText(t, quoteText) >= 0.9) return true
+    if (n.length >= q.length && n.startsWith(q)) return true
+  }
+  return false
+}
+
+/**
+ * 生成气泡模型。`marks` 是这次运行已存的逐条标记（行号对应发言行）。
+ */
+export function buildBubbleItems(turns: BubbleInputTurn[], marks: BubbleInputMark[] = []): BubbleItem[] {
+  const byLine = new Map<number, BubbleInputMark[]>()
+  for (const m of marks) {
+    const list = byLine.get(m.line) ?? []
+    list.push(m)
+    byLine.set(m.line, list)
+  }
+  const earlier: string[] = []
+  const items: BubbleItem[] = []
+  let line = 0
+  for (const turn of turns) {
+    if (turn.kind === "time") {
+      items.push({
+        line: 0,
+        variant: "system",
+        speaker: "",
+        text: turn.text,
+        kind: "time",
+        quote: null,
+        quoteVerified: true,
+        replyUnsplit: false,
+        markedTypes: [],
+        displaySpeaker: "",
+        displayText: turn.text,
+        originalSpeaker: "",
+        originalText: turn.text,
+      })
+      continue
+    }
+    line++
+    const list = byLine.get(line) ?? []
+    const speakerMark = [...list].reverse().find((m) => m.type === "speaker" && m.newSpeaker)
+    const textMark = [...list].reverse().find((m) => m.type === "text" && m.newText != null)
+    const variant: BubbleVariant =
+      turn.speaker === "我"
+        ? "me"
+        : turn.speaker === "我方同事"
+          ? "colleague"
+          : turn.speaker === "未知" || /^(系统|提示)/.test(turn.speaker)
+            ? "system"
+            : "other"
+    const quote = turn.quote ?? null
+    const quoteVerified = quote ? quoteFoundInEarlier(earlier, quote.text) : true
+    const replyUnsplit = !quote && REPLY_LINE.test(String(turn.text ?? ""))
+    earlier.push(turn.text)
+    items.push({
+      line,
+      variant,
+      speaker: turn.speaker,
+      text: turn.text,
+      kind: "speech",
+      quote,
+      quoteVerified,
+      replyUnsplit,
+      markedTypes: [...new Set(list.map((m) => m.type))],
+      displaySpeaker: speakerMark?.newSpeaker ?? turn.speaker,
+      displayText: textMark?.newText ?? turn.text,
+      originalSpeaker: turn.speaker,
+      originalText: turn.text,
+    })
+  }
+  return items
+}
+
+export type BubbleStats = {
+  speakerChanged: number
+  textChanged: number
+  quoteMarked: number
+  extraMarked: number
+  /** 待核对：引用找不到原话 + 回复拆不出引用 */
+  pending: { line: number; reason: "quote-missing" | "reply-unsplit" }[]
+}
+
+export function summarizeBubbles(items: BubbleItem[]): BubbleStats {
+  const stats: BubbleStats = { speakerChanged: 0, textChanged: 0, quoteMarked: 0, extraMarked: 0, pending: [] }
+  for (const item of items) {
+    if (item.markedTypes.includes("speaker")) stats.speakerChanged++
+    if (item.markedTypes.includes("text")) stats.textChanged++
+    if (item.markedTypes.includes("quote")) stats.quoteMarked++
+    if (item.markedTypes.includes("extra")) stats.extraMarked++
+    if (!item.quoteVerified) stats.pending.push({ line: item.line, reason: "quote-missing" })
+    if (item.replyUnsplit) stats.pending.push({ line: item.line, reason: "reply-unsplit" })
+  }
+  return stats
+}
+
+/** 是否「我」的气泡（右侧、绿色）。 */
+export function isMeBubble(item: BubbleItem): boolean {
+  return item.variant === "me"
+}
