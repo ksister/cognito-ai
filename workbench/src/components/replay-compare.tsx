@@ -7,6 +7,8 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
+import { ChatBubbles } from "@/components/chat-bubbles"
+import { buildBubbleItems, summarizeBubbles, type BubbleItem } from "@/lib/chat-bubble-view"
 import { cn } from "@/lib/utils"
 import { statusLabel, type ReplayStatus } from "@/lib/replay-model"
 import { ME } from "@/lib/speaker-resolve"
@@ -26,6 +28,7 @@ import {
   type ReplayFieldDiff,
   type ReplayFieldReview,
   type ReplayIssueType,
+  type ReplayLineMark,
   type ReplayRun,
   type ReplayRunState,
 } from "@/lib/replay-result"
@@ -91,6 +94,15 @@ type Preview = { ok?: boolean; error?: string; preview?: PreviewData }
 
 type RunMode = "reorganize" | "retranscribe"
 type Edits = Record<string, ReplayFieldReview>
+
+/** 气泡标记的中文名（顶部统计和「已标」用）。 */
+const MARK_LABEL: Record<"speaker" | "text" | "extra" | "quote" | "unquote", string> = {
+  speaker: "改发言人",
+  text: "改文字",
+  extra: "多余",
+  quote: "是引用",
+  unquote: "不是引用",
+}
 
 const STATUS_STYLE: Record<ReplayStatus, string> = {
   untested: "bg-zinc-100 text-zinc-600 border-zinc-200",
@@ -194,6 +206,11 @@ export function ReplayCompare({
     runs[0]?.review?.textErrorCount ? String(runs[0].review.textErrorCount) : "",
   )
   const [textErrNote, setTextErrNote] = useState(() => runs[0]?.review?.textErrorNote ?? "")
+  const [viewMode, setViewMode] = useState<"bubble" | "text">("bubble")
+  const [marks, setMarks] = useState<ReplayLineMark[]>(() => runs[0]?.review?.lineMarks ?? [])
+  const [editingLine, setEditingLine] = useState<number | null>(null)
+  const [editSpeaker, setEditSpeaker] = useState("我")
+  const [editText, setEditText] = useState("")
 
   // 刷新页面后如果多了新结果（刚跑完），自动切到最新那次。
   const knownRuns = useRef<Set<string>>(new Set(runs.map((r) => r.runId)))
@@ -236,6 +253,13 @@ export function ReplayCompare({
     [selected, compareRun],
   )
 
+  // 气泡视图（PR-B）：纯显示模型 + 顶部统计 + 待核对（引用找不到原话 / 回复拆不出引用）。
+  const bubbles: BubbleItem[] = useMemo(
+    () => buildBubbleItems(selected?.turns ?? [], marks),
+    [selected, marks],
+  )
+  const bubbleStats = useMemo(() => summarizeBubbles(bubbles), [bubbles])
+
   function pickRun(runId: string) {
     const run = runs.find((r) => r.runId === runId) ?? null
     const nextEdits = editsFromRun(run)
@@ -247,6 +271,8 @@ export function ReplayCompare({
     setTextError(Boolean(run?.review?.textError))
     setTextErrCount(run?.review?.textErrorCount ? String(run.review.textErrorCount) : "")
     setTextErrNote(run?.review?.textErrorNote ?? "")
+    setMarks(run?.review?.lineMarks ?? [])
+    setEditingLine(null)
     setCompareRunId((cur) => (cur === runId ? "" : cur))
     setSavedAt(null)
     setError(null)
@@ -256,13 +282,37 @@ export function ReplayCompare({
     setEdits((cur) => applyField(cur, key, patch))
   }
 
-  async function save(reviewed: boolean, fields: Edits = edits) {
+  /** 气泡上标的错：同一行同一类型只留最后一条，立刻保存到这次运行的核对结果。 */
+  function upsertMark(mark: ReplayLineMark) {
+    const next = [...marks.filter((m) => !(m.line === mark.line && m.type === mark.type)), mark].sort(
+      (a, b) => a.line - b.line,
+    )
+    void save(false, edits, next)
+  }
+
+  function removeMark(line: number, type: ReplayLineMark["type"]) {
+    const next = marks.filter((m) => !(m.line === line && m.type === type))
+    void save(false, edits, next)
+  }
+
+  function scrollToPending() {
+    const target = bubbleStats.pending[0]
+    if (!target) return
+    const el = document.getElementById(`chat-line-${target.line}`)
+    el?.scrollIntoView({ behavior: "smooth", block: "center" })
+    el?.classList.add("ring-2", "ring-sky-500")
+  }
+
+  async function save(reviewed: boolean, fields: Edits = edits, nextMarks: ReplayLineMark[] = marks) {
     if (!selected) return
     setSaving(true)
     setError(null)
     try {
       const count = Number.parseInt(speakerErrCount, 10)
       const textCount = Number.parseInt(textErrCount, 10)
+      // 气泡上有标记时自动勾上对应的「发言人有误」「文字有误」；用户也可以手动勾。
+      const speakerFlag = speakerError || nextMarks.some((m) => m.type === "speaker")
+      const textFlag = textError || nextMarks.some((m) => m.type === "text")
       const res = await fetch("/api/replay/review", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -271,11 +321,12 @@ export function ReplayCompare({
           runId: selected.runId,
           fields,
           reviewed,
-          speakerError,
+          speakerError: speakerFlag,
           speakerErrorCount: Number.isFinite(count) && count > 0 ? count : 0,
-          textError,
+          textError: textFlag,
           textErrorCount: Number.isFinite(textCount) && textCount > 0 ? textCount : 0,
           textErrorNote: textErrNote,
+          lineMarks: nextMarks,
         }),
       })
       const data = (await res.json()) as { ok?: boolean; error?: string }
@@ -283,6 +334,8 @@ export function ReplayCompare({
         setError(data.error ?? `保存失败（HTTP ${res.status}）`)
         return
       }
+      if (speakerFlag) setSpeakerError(true)
+      if (textFlag) setTextError(true)
       setSavedAt(new Date().toISOString())
       setLastSaved(JSON.stringify(fields))
       if (reviewed) {
@@ -503,6 +556,47 @@ export function ReplayCompare({
               {compareRunId && compareRows.length > 0 && (
                 <p className="text-muted-foreground">黄色 = 同一句话、两版发言人不同；灰色 = 另一版没有这一行。</p>
               )}
+              <div className="flex flex-wrap items-center gap-2 border-t pt-1.5">
+                <span className="inline-flex overflow-hidden rounded border text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("bubble")}
+                    className={cn("px-2 py-0.5", viewMode === "bubble" ? "bg-foreground text-background" : "bg-background")}
+                  >
+                    气泡
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode("text")}
+                    className={cn("px-2 py-0.5", viewMode === "text" ? "bg-foreground text-background" : "bg-background")}
+                  >
+                    纯文本
+                  </button>
+                </span>
+                <span className="text-muted-foreground">
+                  发言人改了 {bubbleStats.speakerChanged} · 文字改了 {bubbleStats.textChanged} · 引用{" "}
+                  {bubbleStats.quoteMarked} · 不是引用 {bubbleStats.unquoteMarked} · 多余 {bubbleStats.extraMarked}
+                </span>
+                {bubbleStats.staleMarks > 0 && (
+                  <span className="rounded bg-rose-50 px-1.5 py-0.5 text-rose-700">
+                    有 {bubbleStats.staleMarks} 处标记对不上当前转写，请重新核对
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={scrollToPending}
+                  disabled={!bubbleStats.pending.length}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[11px]",
+                    bubbleStats.pending.length
+                      ? "bg-amber-100 text-amber-800 hover:bg-amber-200"
+                      : "text-muted-foreground",
+                  )}
+                >
+                  待核对 {bubbleStats.pending.length} 处
+                  {bubbleStats.pending.length ? "（点一下跳过去）" : ""}
+                </button>
+              </div>
             </div>
 
             <div className="p-2">
@@ -547,6 +641,144 @@ export function ReplayCompare({
                         </span>
                       </div>
                     ))
+                  ) : viewMode === "bubble" ? (
+                    <ChatBubbles
+                      items={bubbles}
+                      dimOthers={onlyMe}
+                      isSpeakerDiff={(item) => compareRows.some((r) => r.left?.text === item.text && r.speakerDiff)}
+                      onBubbleClick={(item) => {
+                        setEditingLine((cur) => (cur === item.line ? null : item.line))
+                        setEditSpeaker(item.speaker)
+                        setEditText(item.displayText)
+                      }}
+                      onQuoteClick={(item) => {
+                        setEditingLine(item.line)
+                        setEditSpeaker(item.speaker)
+                        setEditText(item.displayText)
+                      }}
+                      renderActions={(item) =>
+                        editingLine === item.line ? (
+                          <div className="mt-1 w-full max-w-[18rem] space-y-1 rounded-lg border bg-background p-2 text-[11px] shadow-sm">
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-muted-foreground">发言人：</span>
+                              {(["我", "客户", "我方同事", "系统"] as const).map((v) => (
+                                <button
+                                  key={v}
+                                  type="button"
+                                  onClick={() =>
+                                    upsertMark({
+                                      line: item.line,
+                                      type: "speaker",
+                                      originalSpeaker: item.originalSpeaker,
+                                      originalText: item.originalText,
+                                      newSpeaker: v,
+                                    })
+                                  }
+                                  className={cn(
+                                    "rounded border px-1.5 py-0.5",
+                                    editSpeaker === v ? "bg-foreground text-background" : "hover:bg-muted",
+                                  )}
+                                >
+                                  {v}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="flex items-start gap-1">
+                              <span className="pt-1 text-muted-foreground">文字：</span>
+                              <Textarea
+                                value={editText}
+                                onChange={(e) => setEditText(e.target.value)}
+                                rows={2}
+                                className="min-h-8 bg-background text-[11px]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  upsertMark({
+                                    line: item.line,
+                                    type: "text",
+                                    originalSpeaker: item.originalSpeaker,
+                                    originalText: item.originalText,
+                                    newText: editText,
+                                  })
+                                }
+                                className="mt-1 shrink-0 rounded border px-1.5 py-0.5 hover:bg-muted"
+                              >
+                                保存文字
+                              </button>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  upsertMark({
+                                    line: item.line,
+                                    type: "extra",
+                                    originalSpeaker: item.originalSpeaker,
+                                    originalText: item.originalText,
+                                  })
+                                }
+                                className="rounded border border-red-200 px-1.5 py-0.5 text-red-700 hover:bg-red-50"
+                              >
+                                多余（这行不该存在）
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  upsertMark({
+                                    line: item.line,
+                                    type: "quote",
+                                    originalSpeaker: item.originalSpeaker,
+                                    originalText: item.originalText,
+                                  })
+                                }
+                                className="rounded border px-1.5 py-0.5 hover:bg-muted"
+                              >
+                                是引用（并进上一条）
+                              </button>
+                              {(item.quote || item.replyUnsplit) && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    upsertMark({
+                                      line: item.line,
+                                      type: "unquote",
+                                      originalSpeaker: item.originalSpeaker,
+                                      originalText: item.originalText,
+                                    })
+                                  }
+                                  className="rounded border border-amber-300 px-1.5 py-0.5 text-amber-800 hover:bg-amber-50"
+                                >
+                                  不是引用（拆回单独一条）
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEditingLine(null)}
+                                className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted"
+                              >
+                                收起
+                              </button>
+                            </div>
+                            {item.markedTypes.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                                已标：
+                                {item.markedTypes.map((t) => (
+                                  <button
+                                    key={t}
+                                    type="button"
+                                    onClick={() => removeMark(item.line, t)}
+                                    className="rounded bg-muted px-1 hover:bg-muted-foreground/20"
+                                  >
+                                    {MARK_LABEL[t]} ×
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ) : null
+                      }
+                    />
                   ) : (
                     transcriptLineRows.map((line, i) => (
                       <div

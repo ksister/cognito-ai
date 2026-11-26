@@ -14,6 +14,7 @@ type Body = {
   textError?: unknown
   textErrorCount?: unknown
   textErrorNote?: unknown
+  lineMarks?: unknown
 }
 
 /** 字段建议只接受字符串和四种问题类型，别的直接丢掉（存盘前在 lib 里还会再洗一遍）。 */
@@ -61,6 +62,7 @@ export async function POST(req: Request) {
       textErrorCount:
         typeof body.textErrorCount === "number" && Number.isFinite(body.textErrorCount) ? body.textErrorCount : undefined,
       textErrorNote: typeof body.textErrorNote === "string" ? body.textErrorNote : undefined,
+      lineMarks: body.lineMarks,
     })
     if (!result.ok) return Response.json({ ok: false, error: result.error }, { status: 404 })
     return Response.json({
@@ -72,6 +74,7 @@ export async function POST(req: Request) {
         textError: result.run.review?.textError === true,
         textErrorCount: result.run.review?.textErrorCount ?? 0,
         textErrorNote: result.run.review?.textErrorNote ?? "",
+        lineMarkCount: (result.run.review?.lineMarks ?? []).length,
         reviewedAt: result.run.review?.reviewedAt ?? null,
         updatedAt: result.run.review?.updatedAt ?? null,
       },

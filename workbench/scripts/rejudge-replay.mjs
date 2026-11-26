@@ -89,6 +89,8 @@ let skipped = 0
 let quoteTotal = 0
 let replyTotal = 0
 let unsplitTotal = 0
+/** 因为有逐条标记而跳过的记录编号（保护用户标记，不重判）。 */
+const markedSkipped = []
 
 for (const dirName of fs.readdirSync(resultsRoot)) {
   const dir = path.join(resultsRoot, dirName)
@@ -101,6 +103,13 @@ for (const dirName of fs.readdirSync(resultsRoot)) {
     if (only.length && !only.includes(run.r)) continue
     if (!only.length && !all) continue
     scanned++
+    // 保护用户的逐条标记：有 lineMarks 的结果不重判（重判会改行号/文字，标记就对不上原转写了）。
+    const markCount = Array.isArray(run.review?.lineMarks) ? run.review.lineMarks.length : 0
+    if (markCount > 0) {
+      markedSkipped.push(run.r)
+      console.log(`${run.r} ${run.runId}: 有 ${markCount} 处逐条标记，跳过（保护用户标记）`)
+      continue
+    }
     // 用模型看到的原始名字 + 侧别重判；没有 rawSpeaker 的旧结果跳过（重判不了）
     if (!run.turns.every((t) => typeof t.rawSpeaker === "string")) {
       skipped++
@@ -158,3 +167,12 @@ console.log(
     `并入上一条的引用 ${quoteTotal} 行；飞书回复拆出引用 ${replyTotal} 行（拆不出 ${unsplitTotal} 行）。` +
     (apply ? "已写回。" : "（dry-run，没有写文件；加 --apply 才写）"),
 )
+if (markedSkipped.length) {
+  const byRecord = {}
+  for (const r of markedSkipped) byRecord[r] = (byRecord[r] ?? 0) + 1
+  const list = Object.entries(byRecord)
+    .map(([r, n]) => `${r}×${n}`)
+    .join("、")
+  console.log(`因为有逐条标记而跳过 ${markedSkipped.length} 次运行：${list}`)
+  console.log("（要重判带标记的结果，必须先按 lineMarks[].originalText 重新对齐；这次不做，见交接说明。）")
+}

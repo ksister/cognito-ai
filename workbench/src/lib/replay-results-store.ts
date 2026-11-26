@@ -5,6 +5,7 @@ import {
   deriveRunState,
   isSafeRecordId,
   isValidRunId,
+  normalizeLineMarks,
   normalizeReviewFields,
   parseReplayRun,
   sortRunsNewestFirst,
@@ -100,6 +101,7 @@ export async function saveRunReview({
   textError,
   textErrorCount,
   textErrorNote,
+  lineMarks,
   at = new Date(),
 }: {
   kbDir: string
@@ -117,6 +119,8 @@ export async function saveRunReview({
   textErrorCount?: number
   /** 记录级：文字错误的备注（可选，不传就保留原来的）。 */
   textErrorNote?: string
+  /** 逐条标记（可选，不传就保留原来的）。 */
+  lineMarks?: unknown
   at?: Date
 }): Promise<{ ok: true; run: ReplayRun } | { ok: false; error: string }> {
   // 接口层已经挡过一次，这里再挡一次：这层是拼路径的最后一关。
@@ -133,6 +137,7 @@ export async function saveRunReview({
   const rawTextCount = textErrorCount === undefined ? (run.review?.textErrorCount ?? 0) : textErrorCount
   const textCount = Number.isFinite(rawTextCount) ? Math.max(0, Math.min(9999, Math.round(rawTextCount))) : 0
   const note = textErrorNote === undefined ? (run.review?.textErrorNote ?? "") : String(textErrorNote).trim().slice(0, 2000)
+  const marks = lineMarks === undefined ? (run.review?.lineMarks ?? []) : normalizeLineMarks(lineMarks)
   run.review = {
     fields: nextFields,
     ...(nextSpeakerError ? { speakerError: true } : {}),
@@ -140,6 +145,7 @@ export async function saveRunReview({
     ...(nextTextError ? { textError: true } : {}),
     ...(textCount > 0 ? { textErrorCount: textCount } : {}),
     ...(note ? { textErrorNote: note } : {}),
+    ...(marks.length ? { lineMarks: marks } : {}),
     reviewedAt: reviewed ? now : (run.review?.reviewedAt ?? null),
     updatedAt: now,
   }

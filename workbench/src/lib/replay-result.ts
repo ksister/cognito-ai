@@ -42,6 +42,22 @@ export type ReplayFieldReview = {
   issue: ReplayIssueType | null
 }
 
+/** 逐条标记（T33 PR-B）：以后作为「标准答案」评估转写改进，按行号对上原转写。 */
+export type ReplayLineMarkType = "speaker" | "text" | "extra" | "quote" | "unquote"
+
+export type ReplayLineMark = {
+  /** 第几条消息（从 1 数，只数发言行） */
+  line: number
+  type: ReplayLineMarkType
+  /** 标记时气泡上的发言人和原文（悬停显示「原来的内容」用） */
+  originalSpeaker: string
+  originalText: string
+  /** 改发言人时的目标值（我 / 客户 / 我方同事 / 系统） */
+  newSpeaker?: string
+  /** 改文字后的内容 */
+  newText?: string
+}
+
 export type ReplayReview = {
   /** key 是表结构里的字段 key（title/problem/...）。没写过建议的字段不出现。 */
   fields: Record<string, ReplayFieldReview>
@@ -55,6 +71,8 @@ export type ReplayReview = {
   textErrorCount?: number
   /** 记录级：文字错误的备注（用户写「原文 vs 转写」的对照）。 */
   textErrorNote?: string
+  /** 逐条标记（气泡上标的发言/文字/多余/引用） */
+  lineMarks?: ReplayLineMark[]
   /** 用户点「完成核对」的时间；null = 还没核对（草稿建议仍然存着）。 */
   reviewedAt: string | null
   updatedAt: string
@@ -205,17 +223,47 @@ export function isReviewed(run: Pick<ReplayRun, "review">): boolean {
   return Boolean(run.review?.reviewedAt)
 }
 
-/** 任一个字段选了问题类型，或记录级的「发言人有误」被勾上 = 这次核对有问题。 */
+/** 任一个字段选了问题类型，或记录级的「发言人有误」「文字有误」被勾上，或气泡上有发言/文字标记 = 有问题。 */
 export function reviewHasIssue(review: ReplayReview | null | undefined): boolean {
   if (!review) return false
   if (review.speakerError) return true
   if (review.textError) return true
+  if ((review.lineMarks ?? []).some((m) => m.type === "speaker" || m.type === "text")) return true
   return Object.values(review.fields ?? {}).some((f) => isReplayIssueType(f?.issue))
 }
 
 /** 建议和问题类型都为空 = 这个字段没写过东西，存盘时删掉。 */
 export function isBlankFieldReview(f: ReplayFieldReview | null | undefined): boolean {
   return !String(f?.note ?? "").trim() && !isReplayIssueType(f?.issue)
+}
+
+/** 洗逐条标记：行号正整数、类型合法、原文/新值都有长度上限；同一行同一类型只留最后一条。 */
+export function normalizeLineMarks(input: unknown): ReplayLineMark[] {
+  if (!Array.isArray(input)) return []
+  const byKey = new Map<string, ReplayLineMark>()
+  for (const raw of input) {
+    if (!raw || typeof raw !== "object") continue
+    const o = raw as Record<string, unknown>
+    const line = Number(o.line)
+    const type = o.type
+    if (!Number.isInteger(line) || line < 1 || line > 99999) continue
+    if (!isReplayLineMarkType(type)) continue
+    const newSpeaker = str(o.newSpeaker).trim().slice(0, 40) || undefined
+    const newText = typeof o.newText === "string" ? o.newText.slice(0, 4000) : undefined
+    byKey.set(`${line}:${type}`, {
+      line,
+      type,
+      originalSpeaker: str(o.originalSpeaker).slice(0, 200),
+      originalText: str(o.originalText).slice(0, 4000),
+      ...(newSpeaker ? { newSpeaker } : {}),
+      ...(newText !== undefined ? { newText } : {}),
+    })
+  }
+  return [...byKey.values()].sort((a, b) => a.line - b.line || a.type.localeCompare(b.type))
+}
+
+export function isReplayLineMarkType(v: unknown): v is ReplayLineMarkType {
+  return v === "speaker" || v === "text" || v === "extra" || v === "quote" || v === "unquote"
 }
 
 export type ReplayRunState = {
@@ -390,6 +438,10 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
         ? { textErrorCount: Math.min(9999, Math.round(textErrorCount)) }
         : {}),
       ...(note ? { textErrorNote: note } : {}),
+      ...(() => {
+        const marks = normalizeLineMarks(reviewRaw.lineMarks)
+        return marks.length ? { lineMarks: marks } : {}
+      })(),
       reviewedAt: str(reviewRaw.reviewedAt) || null,
       updatedAt: str(reviewRaw.updatedAt) || "",
     }
