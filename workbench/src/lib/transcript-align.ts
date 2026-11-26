@@ -39,9 +39,23 @@ function isTimeLine(turn: AlignTurn): boolean {
   return turn.kind === "time"
 }
 
-/** 发言人比较用的归一化（「我方同事」和具体名字不算同一个人，所以原样比）。 */
+/**
+ * 发言人名字的比较形状：全角半角统一、去掉空格和分隔符号、去掉括号码。
+ * 「工作 宇创 张三」「工作-宇创-张三」「工作／宇创／张三」「【工作】宇创 张三」都算同一个人。
+ * 只用于**比较**，显示仍是原文。
+ */
+export function normalizeSpeakerForCompare(name: string): string {
+  return String(name ?? "")
+    .normalize("NFKC")
+    .replace(/[\s\u3000]+/g, "")
+    .replace(/[《》〈〉【】\[\]（）()「」『』{}]/g, "")
+    .replace(/[-_·•・|｜/／\\、，,；;:：.。+＋&＆~～]+/g, "")
+    .toLowerCase()
+}
+
+/** 发言人比较：先统一格式再比（同一名字的不同写法不算「发言人不同」）。 */
 export function sameSpeaker(a: AlignTurn, b: AlignTurn): boolean {
-  return String(a.speaker ?? "").trim() === String(b.speaker ?? "").trim()
+  return normalizeSpeakerForCompare(a.speaker) === normalizeSpeakerForCompare(b.speaker)
 }
 
 /**

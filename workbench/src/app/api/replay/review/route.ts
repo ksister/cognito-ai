@@ -11,6 +11,9 @@ type Body = {
   reviewed?: unknown
   speakerError?: unknown
   speakerErrorCount?: unknown
+  textError?: unknown
+  textErrorCount?: unknown
+  textErrorNote?: unknown
 }
 
 /** 字段建议只接受字符串和四种问题类型，别的直接丢掉（存盘前在 lib 里还会再洗一遍）。 */
@@ -54,6 +57,10 @@ export async function POST(req: Request) {
         typeof body.speakerErrorCount === "number" && Number.isFinite(body.speakerErrorCount)
           ? body.speakerErrorCount
           : undefined,
+      textError: typeof body.textError === "boolean" ? body.textError : undefined,
+      textErrorCount:
+        typeof body.textErrorCount === "number" && Number.isFinite(body.textErrorCount) ? body.textErrorCount : undefined,
+      textErrorNote: typeof body.textErrorNote === "string" ? body.textErrorNote : undefined,
     })
     if (!result.ok) return Response.json({ ok: false, error: result.error }, { status: 404 })
     return Response.json({
@@ -62,6 +69,9 @@ export async function POST(req: Request) {
         fieldCount: Object.keys(result.run.review?.fields ?? {}).length,
         speakerError: result.run.review?.speakerError === true,
         speakerErrorCount: result.run.review?.speakerErrorCount ?? 0,
+        textError: result.run.review?.textError === true,
+        textErrorCount: result.run.review?.textErrorCount ?? 0,
+        textErrorNote: result.run.review?.textErrorNote ?? "",
         reviewedAt: result.run.review?.reviewedAt ?? null,
         updatedAt: result.run.review?.updatedAt ?? null,
       },

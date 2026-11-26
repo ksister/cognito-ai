@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { alignTranscripts, countSpeakerDiffs, normalizeForAlign, textSimilarity, type AlignTurn } from "./transcript-align"
+import {
+  alignTranscripts,
+  countSpeakerDiffs,
+  normalizeForAlign,
+  normalizeSpeakerForCompare,
+  sameSpeaker,
+  textSimilarity,
+  type AlignTurn,
+} from "./transcript-align"
 
 function t(speaker: string, text: string, kind: "speech" | "time" = "speech"): AlignTurn {
   return { speaker, text, kind }
@@ -18,6 +26,32 @@ describe("normalizeForAlign / textSimilarity", () => {
 
   it("文字有一点点出入也能对上", () => {
     expect(textSimilarity("这个问题明天去现场看一下", "这个问题明天去现场看看")).toBeGreaterThanOrEqual(0.6)
+  })
+})
+
+describe("发言人名字格式归一（避免误报发言人不同）", () => {
+  it("空格、分隔符、全角半角、括号不同都算同一个人", () => {
+    const variants = ["工作 宇创 张三", "工作-宇创-张三", "工作／宇创／张三", "【工作】宇创 张三", "工作　宇创　张三", "工作_宇创_张三"]
+    const base = normalizeSpeakerForCompare(variants[0])
+    for (const v of variants) expect(normalizeSpeakerForCompare(v)).toBe(base)
+  })
+
+  it("真不同的名字不会被当成一样", () => {
+    expect(normalizeSpeakerForCompare("张三")).not.toBe(normalizeSpeakerForCompare("李四"))
+    expect(normalizeSpeakerForCompare("我方同事")).not.toBe(normalizeSpeakerForCompare("张三"))
+  })
+
+  it("sameSpeaker 用归一后的名字比", () => {
+    expect(sameSpeaker(t("工作 宇创 张三", "a"), t("工作-宇创-张三", "a"))).toBe(true)
+    expect(sameSpeaker(t("工作 宇创 张三", "a"), t("工作 宇创 李四", "a"))).toBe(false)
+  })
+
+  it("对齐时同一名字的不同写法不算发言人不同（R060 的误报）", () => {
+    const rows = alignTranscripts(
+      [t("工作 宇创 张三", "闪退有哪天"), t("工作-宇创-张三", "今天下午")],
+      [t("工作-宇创-张三", "闪退有哪天"), t("工作 宇创 张三", "今天下午")],
+    )
+    expect(rows.every((r) => !r.speakerDiff)).toBe(true)
   })
 })
 

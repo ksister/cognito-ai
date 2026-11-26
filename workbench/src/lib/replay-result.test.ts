@@ -175,11 +175,36 @@ describe("deriveRunState（T27 状态口径）", () => {
 })
 
 describe("review 判定", () => {
-  it("reviewHasIssue 认四种问题类型，也认记录级的「发言人有误」", () => {
+  it("reviewHasIssue 认四种问题类型，也认记录级的「发言人有误」「文字有误」", () => {
     expect(reviewHasIssue(null)).toBe(false)
     expect(reviewHasIssue({ fields: {}, reviewedAt: null, updatedAt: "" })).toBe(false)
     expect(reviewHasIssue({ fields: { a: { note: "", issue: "fabricated" } }, reviewedAt: null, updatedAt: "" })).toBe(true)
     expect(reviewHasIssue({ fields: {}, speakerError: true, reviewedAt: null, updatedAt: "" })).toBe(true)
+    expect(reviewHasIssue({ fields: {}, textError: true, reviewedAt: null, updatedAt: "" })).toBe(true)
+  })
+
+  it("「文字有误」+ 错几处 + 备注 会存在 review 里", () => {
+    const parsed = parseReplayRun({
+      version: 1,
+      runId: "20261124T090000-aaaa",
+      recordId: "recTEST",
+      r: "R060",
+      mode: "retranscribe",
+      at: "2026-11-24T09:00:00.000Z",
+      fields: {},
+      review: {
+        fields: {},
+        textError: true,
+        textErrorCount: 1,
+        textErrorNote: "「闪退有哪天」被转成「闪退有哪」，漏了一个字",
+        reviewedAt: "2026-11-24T10:00:00.000Z",
+        updatedAt: "2026-11-24T10:00:00.000Z",
+      },
+    })
+    expect(parsed?.review?.textError).toBe(true)
+    expect(parsed?.review?.textErrorCount).toBe(1)
+    expect(parsed?.review?.textErrorNote).toContain("漏了一个字")
+    expect(deriveRunState([parsed!]).status).toBe("issue")
   })
 
   it("「发言人有误」+ 错几条 会存在 review 里，并让状态变成有问题", () => {

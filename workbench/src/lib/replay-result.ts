@@ -47,8 +47,14 @@ export type ReplayReview = {
   fields: Record<string, ReplayFieldReview>
   /** 记录级：发言人（谁说的）有误。仅凭这一个勾选也算「有问题」。 */
   speakerError?: boolean
-  /** 记录级：错了几条（用户自己数的）。 */
+  /** 记录级：发言人错了几条（用户自己数的）。 */
   speakerErrorCount?: number
+  /** 记录级：文字有误（漏字、错字、把原话转错）。 */
+  textError?: boolean
+  /** 记录级：文字错了几处。 */
+  textErrorCount?: number
+  /** 记录级：文字错误的备注（用户写「原文 vs 转写」的对照）。 */
+  textErrorNote?: string
   /** 用户点「完成核对」的时间；null = 还没核对（草稿建议仍然存着）。 */
   reviewedAt: string | null
   updatedAt: string
@@ -201,6 +207,7 @@ export function isReviewed(run: Pick<ReplayRun, "review">): boolean {
 export function reviewHasIssue(review: ReplayReview | null | undefined): boolean {
   if (!review) return false
   if (review.speakerError) return true
+  if (review.textError) return true
   return Object.values(review.fields ?? {}).some((f) => isReplayIssueType(f?.issue))
 }
 
@@ -368,12 +375,19 @@ export function parseReplayRun(value: unknown): ReplayRun | null {
   let review: ReplayReview | null = null
   if (reviewRaw && typeof reviewRaw === "object") {
     const speakerErrorCount = Number(reviewRaw.speakerErrorCount)
+    const textErrorCount = Number(reviewRaw.textErrorCount)
+    const note = str(reviewRaw.textErrorNote).trim().slice(0, 2000)
     review = {
       fields: normalizeReviewFields(reviewRaw.fields),
       ...(reviewRaw.speakerError === true ? { speakerError: true } : {}),
       ...(Number.isFinite(speakerErrorCount) && speakerErrorCount > 0
         ? { speakerErrorCount: Math.min(9999, Math.round(speakerErrorCount)) }
         : {}),
+      ...(reviewRaw.textError === true ? { textError: true } : {}),
+      ...(Number.isFinite(textErrorCount) && textErrorCount > 0
+        ? { textErrorCount: Math.min(9999, Math.round(textErrorCount)) }
+        : {}),
+      ...(note ? { textErrorNote: note } : {}),
       reviewedAt: str(reviewRaw.reviewedAt) || null,
       updatedAt: str(reviewRaw.updatedAt) || "",
     }
